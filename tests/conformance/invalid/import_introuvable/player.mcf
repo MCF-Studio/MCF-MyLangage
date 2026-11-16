@@ -1,0 +1,3 @@
+scope Player {
+    name: String = "Alex";
+}

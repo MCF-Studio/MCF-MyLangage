@@ -23,3 +23,7 @@ Le cahier des charges interdit les décisions structurantes silencieuses (§24).
 | D15 | Taille des numériques | Proposition : `Int` = 64 bits signé, `Float` = 64 bits IEEE 754 | Non tranché par la spec | ⬜ |
 | D16 | Littéral `Char`, exposants | Pas encore | Non spécifié | ⬜ |
 | D17 | Licence | Aucune pour l'instant (tous droits réservés), code public pour audit | Langage décrit comme propriétaire ; une licence est nécessaire pour accepter des contributions | ⬜ |
+| D18 | Types et fonctions natifs (phase 3) | Types de §5 + `Bytes` (§11.1) ; fonctions `print(x)` et `sleep(ms)` | Seuls éléments natifs cités par la spec | 🟡 |
+| D19 | Portée des événements | Visibles dans tout le projet, sans import ; nom unique dans le projet | Les événements servent à relier des modules entre eux | 🟡 |
+| D20 | Projet et imports | Un dossier vérifié = un projet ; `import` cible un élément d'un **autre** fichier ; un nom d'un autre fichier sans import → MCF0200 avec suggestion | §8 : « les imports doivent être représentés clairement dans le code source » | 🟡 |
+| D21 | Masquage | Avertissement MCF0204 (erreur en `--strict`) | §7.1 : autorisé mais « le compilateur doit détecter les masquages » | 🟡 |

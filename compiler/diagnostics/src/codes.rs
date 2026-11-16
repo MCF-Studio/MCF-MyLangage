@@ -58,4 +58,18 @@ codes! {
     MISSING_THEN = "MCF0117", Syntax, Error, "`if (...)` doit être suivi de `then`.";
     MISSING_DO = "MCF0118", Syntax, Error, "Une boucle doit être suivie de `do`.";
     UNCLOSED_DELIMITER = "MCF0119", Syntax, Error, "Délimiteur ouvrant sans fermeture.";
+
+    UNDECLARED_NAME = "MCF0200", Semantic, Error, "Nom utilisé sans déclaration accessible.";
+    DUPLICATE_DECLARATION = "MCF0201", Semantic, Error, "Nom déjà déclaré dans le même scope.";
+    UNKNOWN_TYPE = "MCF0202", Type, Error, "Type inconnu.";
+    DUPLICATE_DUAL_TYPE = "MCF0203", Type, Error, "DualType : les deux types doivent être distincts.";
+    SHADOWED_LOCAL = "MCF0204", Semantic, Warning, "Une variable locale en masque une autre d'un bloc parent.";
+    UNDECLARED_EVENT = "MCF0205", Semantic, Error, "Événement non déclaré.";
+    UNRESOLVED_IMPORT = "MCF0206", Import, Error, "Import introuvable dans le projet.";
+    UNKNOWN_MEMBER = "MCF0207", Semantic, Error, "Membre absent du scope.";
+    IMPORT_CONFLICT = "MCF0208", Import, Error, "Import ambigu ou en collision avec une déclaration.";
+    EVENT_ARITY_MISMATCH = "MCF0209", Semantic, Error, "Nombre de données d'événement incorrect.";
+    ARGUMENT_COUNT_MISMATCH = "MCF0210", Semantic, Error, "Nombre d'arguments incorrect.";
+    LOOP_CONTROL_OUTSIDE_LOOP = "MCF0211", Semantic, Error, "`break` ou `continue` hors d'une boucle.";
+    NOT_ASSIGNABLE = "MCF0212", Semantic, Error, "Une fonction, un scope ou une fonction native ne peut pas recevoir de valeur.";
 }

@@ -1,0 +1,7 @@
+// attendu: MCF0210
+func add(_a: Int, _b: Int): Int {
+    return _a + _b;
+}
+func f(): Void {
+    print(add(1));
+}

@@ -1,0 +1,7 @@
+// attendu: MCF0207
+scope Player {
+    name: String = "Alex";
+}
+func f(): Void {
+    print(Player.nam);
+}

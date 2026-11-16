@@ -1,0 +1,4 @@
+// attendu: MCF0211
+func f(): Void {
+    break;
+}

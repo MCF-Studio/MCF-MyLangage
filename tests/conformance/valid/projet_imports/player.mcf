@@ -1,0 +1,7 @@
+scope Player {
+    name: String = "Alex";
+
+    func rename(_newName: String): Void {
+        name = _newName;
+    }
+}

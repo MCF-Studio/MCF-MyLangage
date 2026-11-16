@@ -1,0 +1,5 @@
+// attendu: MCF0209
+event PlayerConnected(_playerId: Int);
+func f(): Void {
+    emit PlayerConnected(1, 2);
+}

@@ -1,7 +1,4 @@
 // Déclarations globales, DualType, scopes (cahier des charges 1.2, §4, §6, §7)
-import Player;
-import Player.name;
-
 playerName: String = "Alex";
 playerLevel: Int = 10;
 isConnected: Bool = true;

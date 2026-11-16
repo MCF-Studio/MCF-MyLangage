@@ -1,6 +1,12 @@
 // Fonctions, conditions, boucles, narrowing (§6.1, §9, §10)
 players: Array = ["Alex", "Max", "Tom"];
 
+scope Vehicle {
+    scope Engine {
+        power: Float = 300.0;
+    }
+}
+
 func calculateScore(_points: Int, _multiplier: Float): Float {
     _result: Float = _points * _multiplier;
     return _result;

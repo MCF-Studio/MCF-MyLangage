@@ -1,0 +1,4 @@
+// attendu: MCF0200
+func f(): Void {
+    _x: Int = _x + 1;
+}

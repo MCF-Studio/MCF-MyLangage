@@ -1,0 +1,6 @@
+// attendu: MCF0212
+func g(): Void {
+}
+func f(): Void {
+    g = 3;
+}

@@ -5,7 +5,7 @@
 **Un langage strict, lisible d'un coup d'œil, pensé pour les humains *et* les IA — et incapable de vous espionner.**
 
 [![CI](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml/badge.svg)](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml)
-![Statut](https://img.shields.io/badge/statut-phase%201%20%C2%B7%20fondations-orange)
+![Statut](https://img.shields.io/badge/statut-phase%203%20%C2%B7%20r%C3%A9solution%20des%20noms-orange)
 ![Rust](https://img.shields.io/badge/compilateur-Rust-b7410e)
 ![Contributions](https://img.shields.io/badge/contributions-bienvenues-brightgreen)
 
@@ -94,7 +94,7 @@ cargo build --release
 ./target/release/mcf describe keywords
 ```
 
-> Aujourd'hui MCF **analyse** le code (lexer, parser, diagnostics) mais ne l'**exécute** pas encore. Voir la [feuille de route](ROADMAP.md).
+> Aujourd'hui MCF **analyse** le code (syntaxe, résolution des noms, scopes et imports entre fichiers) mais ne l'**exécute** pas encore. Voir la [feuille de route](ROADMAP.md).
 
 ## 🤝 Participer
 
@@ -114,7 +114,7 @@ Tout est expliqué dans [CONTRIBUTING.md](CONTRIBUTING.md). Les ⭐ font aussi p
 |---|---|
 | [Cahier des charges 1.2](docs/cahier-des-charges/edition-1.2.md) | Référence du langage, de l'IDE et de la sécurité |
 | [Chiffrement et clés](docs/securite/chiffrement-et-cles.md) | Engagement « aucun accès éditeur », menaces, limites |
-| [Lexique](docs/grammaire/lexique.md) · [Grammaire](docs/grammaire/grammaire.md) | Ce que le parser accepte aujourd'hui |
+| [Lexique](docs/grammaire/lexique.md) · [Grammaire](docs/grammaire/grammaire.md) · [Résolution des noms](docs/grammaire/resolution-des-noms.md) | Ce que le compilateur vérifie aujourd'hui |
 | [Décisions](docs/DECISIONS.md) | Arbitrages en attente de validation |
 | [Cahier des charges 1.0](docs/cahier-des-charges/edition-1.0.md) | Historique |
 
@@ -123,6 +123,7 @@ Tout est expliqué dans [CONTRIBUTING.md](CONTRIBUTING.md). Les ⭐ font aussi p
 ```text
 compiler/diagnostics   identifiants d'erreurs stables, rendu texte et JSON
 compiler/syntax        lexer, AST, parser
+compiler/semantic      résolution des noms, scopes, imports
 cli                    l'exécutable `mcf`
 tests/conformance      programmes valides / invalides avec l'erreur attendue
 examples               exemples MCF

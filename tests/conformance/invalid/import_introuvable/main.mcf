@@ -1,0 +1,6 @@
+// attendu: MCF0206, MCF0200
+import Playr;
+
+func show(): Void {
+    print(Player.name);
+}

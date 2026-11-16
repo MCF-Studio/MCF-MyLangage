@@ -3,6 +3,7 @@
 //! Codes de sortie : 0 = aucun problème, 1 = erreurs détectées, 2 = usage ou E/S.
 
 use mcf_diagnostics::{codes, SourceFile};
+use mcf_semantic::{check_project, Source};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -121,6 +122,7 @@ fn check(opts: &Options) -> ExitCode {
 
     let (mut errors, mut warnings) = (0usize, 0usize);
     let mut json_diags = Vec::new();
+    let mut sources = Vec::new();
     for path in &paths {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
@@ -129,10 +131,16 @@ fn check(opts: &Options) -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-        let text = text.strip_prefix('\u{feff}').unwrap_or(&text).to_string();
-        let file = SourceFile::new(path.display().to_string().replace('\\', "/"), text);
-        let mut result = mcf_syntax::parse(&file.text);
-        for diag in &mut result.diagnostics {
+        sources.push(Source {
+            name: path.display().to_string().replace('\\', "/"),
+            text: text.strip_prefix('\u{feff}').unwrap_or(&text).to_string(),
+        });
+    }
+    // Tout le dossier forme un seul projet : les imports sont résolus entre ses fichiers.
+    let reports = check_project(&sources);
+    for (source, mut diags) in sources.into_iter().zip(reports) {
+        let file = SourceFile::new(source.name, source.text);
+        for diag in &mut diags {
             if opts.strict {
                 diag.promote_to_error();
             }

@@ -13,6 +13,7 @@ name = "mcf-cli"
 version = "0.1.0"
 dependencies = [
  "mcf-diagnostics",
+ "mcf-semantic",
  "mcf-syntax",
  "serde_json",
 ]
@@ -23,6 +24,14 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "mcf-semantic"
+version = "0.1.0"
+dependencies = [
+ "mcf-diagnostics",
+ "mcf-syntax",
 ]
 
 [[package]]

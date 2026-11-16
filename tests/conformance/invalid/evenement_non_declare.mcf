@@ -1,0 +1,4 @@
+// attendu: MCF0205
+func f(): Void {
+    emit PlayerLeft(1);
+}

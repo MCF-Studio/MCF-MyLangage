@@ -1,0 +1,9 @@
+// Imports entre fichiers (§8) : scope entier, élément précis, accès qualifié.
+import Player;
+import Vehicle.speed;
+
+func show(): Void {
+    print(Player.name);
+    print(speed);
+    Player.rename("Max");
+}

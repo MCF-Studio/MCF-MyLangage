@@ -1,0 +1,4 @@
+// attendu: MCF0200
+func f(): Void {
+    print(_total);
+}

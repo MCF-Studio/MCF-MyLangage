@@ -1,0 +1,7 @@
+// attendu: MCF0200
+func f(_a: Bool): Void {
+    if (_a) then {
+        _inner: Int = 1;
+    }
+    print(_inner);
+}

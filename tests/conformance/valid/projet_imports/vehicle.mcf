@@ -1,0 +1,4 @@
+scope Vehicle {
+    name: String = "Comet";
+    speed: Float = 180.0;
+}
