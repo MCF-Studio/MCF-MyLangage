@@ -4,7 +4,7 @@
 
 **Un langage strict, lisible d'un coup d'œil, pensé pour les humains *et* les IA — et incapable de vous espionner.**
 
-[![CI](https://github.com/LeBriCodeur/MCF-MyLangage/actions/workflows/ci.yml/badge.svg)](https://github.com/LeBriCodeur/MCF-MyLangage/actions/workflows/ci.yml)
+[![CI](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml/badge.svg)](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml)
 ![Statut](https://img.shields.io/badge/statut-phase%201%20%C2%B7%20fondations-orange)
 ![Rust](https://img.shields.io/badge/compilateur-Rust-b7410e)
 ![Contributions](https://img.shields.io/badge/contributions-bienvenues-brightgreen)
@@ -84,7 +84,7 @@ Des interfaces `.uimcf` aussi libres que du HTML/CSS (sans framework imposé), d
 ## Essayer
 
 ```bash
-git clone https://github.com/LeBriCodeur/MCF-MyLangage.git
+git clone https://github.com/MCF-Studio/MCF-MyLangage.git
 cd MCF-MyLangage
 cargo build --release
 
