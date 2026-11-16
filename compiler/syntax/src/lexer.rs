@@ -157,6 +157,7 @@ pub const KEYWORDS: &[(&str, TokenKind)] = &[
 
 /// Mots réservés pour des évolutions prévues par le cahier des charges.
 /// Ils ne peuvent pas servir d'identifiants afin de pouvoir les introduire sans casser de code.
+/// `ui`, `state`, `view`, `style` ne sont PAS réservés : ce seront des mots contextuels des fichiers `.uimcf`.
 pub const RESERVED: &[&str] = &[
     "action",
     "as",
@@ -171,12 +172,8 @@ pub const RESERVED: &[&str] = &[
     "null",
     "secret",
     "set",
-    "state",
     "struct",
-    "style",
     "switch",
-    "ui",
-    "view",
 ];
 
 #[derive(Clone, Debug, PartialEq)]

@@ -1,0 +1,21 @@
+// Premier exemple MCF : DualType, scopes et événements.
+
+scope Player {
+    name: String = "Alex";
+    state: Bool, Int = true;
+
+    func showState(_bonus: Int): Void {
+        if (state is Int) then {
+            print(state + _bonus);
+        }
+        else {
+            print(state);
+        }
+    }
+}
+
+event PlayerConnected(_playerId: Int);
+
+on PlayerConnected(_playerId) {
+    print(_playerId);
+}
