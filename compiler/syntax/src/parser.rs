@@ -145,7 +145,11 @@ impl Parser<'_> {
                     self.bump();
                     break;
                 }
-                K::Func | K::Scope | K::Import | K::Event | K::On if depth == 0 => break,
+                K::Func | K::Scope | K::Import | K::Event | K::On | K::Struct | K::Enum
+                    if depth == 0 =>
+                {
+                    break
+                }
                 _ => {}
             }
             self.bump();
@@ -227,6 +231,8 @@ impl Parser<'_> {
             K::Import => self.import().map(Item::Import),
             K::Event => self.event().map(Item::Event),
             K::On => self.on_handler().map(Item::On),
+            K::Struct => self.struct_decl().map(Item::Struct),
+            K::Enum => self.enum_decl().map(Item::Enum),
             K::Semi => {
                 self.stray_semicolon();
                 None
@@ -351,6 +357,69 @@ impl Parser<'_> {
             span: name.span.to(ty.span),
             name,
             ty,
+        })
+    }
+
+    /// `struct Nom { champ: Type; ... }`
+    fn struct_decl(&mut self) -> Option<StructDecl> {
+        let start = self.bump().span;
+        let name = self.global_ident()?;
+        self.expect(K::LBrace).then_some(())?;
+        let mut fields = Vec::new();
+        while !matches!(self.peek(), K::RBrace | K::Eof) {
+            if self.at(&K::LocalIdent) {
+                let span = self.span();
+                let text = self.text(span).to_string();
+                self.diags.push(
+                    Diagnostic::new(
+                        &codes::INVALID_FIELD_NAME,
+                        span,
+                        format!("le champ `{text}` ne doit pas commencer par `_`"),
+                    )
+                    .suggestion(format!("`{}`", text.trim_start_matches('_'))),
+                );
+            } else if !self.at(&K::Ident) {
+                self.unexpected(&codes::EXPECTED_IDENTIFIER, "un champ `nom: Type;`");
+                return None;
+            }
+            let fname = self.ident()?;
+            self.expect(K::Colon).then_some(())?;
+            let ty = self.type_decl()?;
+            let end = self.prev_span();
+            self.expect_semi();
+            fields.push(Field {
+                span: fname.span.to(end),
+                name: fname,
+                ty,
+            });
+        }
+        let end = self.span();
+        self.expect(K::RBrace).then_some(())?;
+        Some(StructDecl {
+            span: start.to(end),
+            name,
+            fields,
+        })
+    }
+
+    /// `enum Nom { A, B, C }`
+    fn enum_decl(&mut self) -> Option<EnumDecl> {
+        let start = self.bump().span;
+        let name = self.global_ident()?;
+        self.expect(K::LBrace).then_some(())?;
+        let mut variants = Vec::new();
+        while !self.at(&K::RBrace) {
+            variants.push(self.global_ident()?);
+            if !self.eat(&K::Comma) {
+                break;
+            }
+        }
+        let end = self.span();
+        self.expect(K::RBrace).then_some(())?;
+        Some(EnumDecl {
+            span: start.to(end),
+            name,
+            variants,
         })
     }
 
@@ -627,7 +696,7 @@ impl Parser<'_> {
                 self.stray_semicolon();
                 None
             }
-            K::Func | K::Scope | K::Import | K::Event | K::On => {
+            K::Func | K::Scope | K::Import | K::Event | K::On | K::Struct | K::Enum => {
                 let span = self.span();
                 let kw = self.peek().symbol();
                 self.diags.push(
@@ -1036,9 +1105,44 @@ impl Parser<'_> {
                         },
                     };
                 }
+                // `Nom { champ: ... }` ou `Nom { }` : littéral de structure. Le test sur les tokens
+                // suivants évite toute confusion avec un bloc.
+                K::LBrace
+                    if expr_path(&expr).is_some()
+                        && (self.peek_at(1) == &K::RBrace
+                            || (self.peek_at(1) == &K::Ident && self.peek_at(2) == &K::Colon)) =>
+                {
+                    let path = expr_path(&expr).expect("chemin vérifié");
+                    let Some(fields) = self.struct_literal_fields() else {
+                        return expr;
+                    };
+                    expr = Expr {
+                        span: expr.span.to(self.prev_span()),
+                        kind: ExprKind::StructLit { path, fields },
+                    };
+                }
                 _ => return expr,
             }
         }
+    }
+
+    fn struct_literal_fields(&mut self) -> Option<Vec<FieldInit>> {
+        self.bump(); // {
+        let mut fields = Vec::new();
+        while !self.at(&K::RBrace) {
+            let name = self.global_ident()?;
+            self.expect(K::Colon).then_some(())?;
+            let value = self.expr();
+            fields.push(FieldInit {
+                span: name.span.to(value.span),
+                name,
+                value,
+            });
+            if !self.eat(&K::Comma) {
+                break;
+            }
+        }
+        self.expect(K::RBrace).then_some(fields)
     }
 
     fn primary(&mut self) -> Expr {
@@ -1099,5 +1203,22 @@ impl Parser<'_> {
         };
         self.bump();
         Expr { kind, span }
+    }
+}
+
+/// Chemin `A`, `A.B.C` formé uniquement d'identifiants globaux.
+fn expr_path(expr: &Expr) -> Option<Path> {
+    match &expr.kind {
+        ExprKind::Name { ident } if !ident.is_local() => Some(Path {
+            segments: vec![ident.clone()],
+            span: ident.span,
+        }),
+        ExprKind::Member { object, field } => {
+            let mut p = expr_path(object)?;
+            p.segments.push(field.clone());
+            p.span = p.span.to(field.span);
+            Some(p)
+        }
+        _ => None,
     }
 }

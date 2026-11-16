@@ -1,0 +1,48 @@
+// Structures et énumérations (cahier des charges 1.0 §5.2, 1.2 §24.3).
+enum Status { Online, Offline, Away }
+
+struct Position {
+    x: Float;
+    y: Float;
+}
+
+struct User {
+    id: Int;
+    name: String;
+    status: Status;
+    position: Position;
+    level: Bool, Int;
+    friends: Array<User>;
+}
+
+admin: User = User {
+    id: 1,
+    name: "Alex",
+    status: Status.Online,
+    position: Position { x: 0.0, y: 0.0 },
+    level: 10,
+    friends: [],
+};
+
+func move(_user: User, _dx: Float): Position {
+    return Position { x: _user.position.x + _dx, y: _user.position.y };
+}
+
+func describe(_user: User): String {
+    if (_user.status == Status.Away) then {
+        return _user.name + " est absent";
+    }
+    return _user.name;
+}
+
+func run(): Void {
+    admin.name = "Max";
+    admin.position = move(admin, 1.5);
+    admin.status = Status.Offline;
+    _status: Status = admin.status;
+    foreach (_friend in admin.friends) do {
+        print(_friend.name);
+    }
+    print(describe(admin));
+    print(_status);
+}

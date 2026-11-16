@@ -5,7 +5,8 @@ Base : cahier des charges 1.2, §21. Les écarts et compléments sont justifiés
 
 ```text
 Module          = { Item } ;
-Item            = GlobalDecl | FuncDecl | ScopeDecl | ImportDecl | EventDecl | OnHandler ;
+Item            = GlobalDecl | FuncDecl | ScopeDecl | ImportDecl | EventDecl | OnHandler
+                | StructDecl | EnumDecl ;
 
 GlobalDecl      = Ident ":" TypeDecl [ "=" Expr ] ";" ;
 LocalDecl       = LocalIdent ":" TypeDecl [ "=" Expr ] ";" ;
@@ -20,6 +21,8 @@ Param           = LocalIdent ":" TypeDecl ;
 
 ScopeDecl       = "scope" Ident "{" { Item } "}" ;
 ImportDecl      = "import" Path ";" ;
+StructDecl      = "struct" Ident "{" { Ident ":" TypeDecl ";" } "}" ;
+EnumDecl        = "enum" Ident "{" [ Ident { "," Ident } [ "," ] ] "}" ;
 EventDecl       = "event" Path "(" [ Params ] ")" ";" ;
 OnHandler       = "on" Path "(" [ LocalIdent { "," LocalIdent } ] ")" Block ;
 
@@ -47,7 +50,10 @@ Relational      = Additive [ ( "<" | ">" | "<=" | ">=" ) Additive
 Additive        = Multiplicative { ( "+" | "-" ) Multiplicative } ;
 Multiplicative  = Unary { ( "*" | "/" | "%" ) Unary } ;
 Unary           = ( "!" | "-" ) Unary | Postfix ;
-Postfix         = Primary { "(" [ Args ] ")" | "." Ident | "[" Expr "]" } ;
+Postfix         = Primary { "(" [ Args ] ")" | "." Ident | "[" Expr "]" | StructLit } ;
+StructLit       = "{" [ Ident ":" Expr { "," Ident ":" Expr } [ "," ] ] "}" ;
+                  (* seulement après un chemin global `A` / `A.B`, et si `{` est suivi
+                     de `}` ou de `Ident :` — sinon c'est un bloc *)
 Args            = Expr { "," Expr } ;
 Primary         = Int | Float | String | "true" | "false"
                 | Ident | LocalIdent
@@ -78,5 +84,6 @@ Primary         = Int | Float | String | "true" | "false"
 | Type de retour absent | MCF0111 |
 | `;` après un bloc ou instruction vide | MCF0112 (avertissement, erreur en `--strict`) |
 | Instruction exécutable au niveau module | MCF0115 |
-| `func`, `scope`, `event`, `import`, `on` dans un bloc | MCF0116 |
+| `func`, `scope`, `struct`, `enum`, `event`, `import`, `on` dans un bloc | MCF0116 |
+| Champ de structure préfixé `_` | MCF0120 |
 | `then` / `do` manquant | MCF0117 / MCF0118 |

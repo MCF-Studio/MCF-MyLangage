@@ -26,13 +26,13 @@ Implémenté par `compiler/syntax/src/lexer.rs`. Toute modification doit être r
 
 ## Mots-clés
 
-`func scope import event on emit if then else while for foreach in do return break continue is true false`
+`func scope struct enum import event on emit if then else while for foreach in do return break continue is true false`
 
 ## Mots réservés
 
 Interdits comme identifiants (`MCF0008`) pour pouvoir les introduire plus tard sans casser de code :
 
-`action as async await config const enum interface let match null secret set struct switch`
+`action as async await config const interface let match null secret set switch`
 
 `ui`, `state`, `view` et `style` ne sont **pas** réservés en `.mcf` (identifiants trop courants) : ce seront des mots-clés contextuels des fichiers `.uimcf`.
 

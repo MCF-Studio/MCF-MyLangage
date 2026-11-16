@@ -1,0 +1,4 @@
+// attendu: MCF0120
+struct User {
+    _id: Int;
+}

@@ -1,0 +1,5 @@
+// attendu: MCF0242
+struct User {
+    id: Int;
+    id: String;
+}

@@ -1,0 +1,5 @@
+// attendu: MCF0244
+struct Node {
+    value: Int;
+    next: Node;
+}

@@ -1,0 +1,6 @@
+// attendu: MCF0240
+struct User {
+    id: Int;
+    name: String;
+}
+admin: User = User { id: 1 };

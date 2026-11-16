@@ -5,7 +5,7 @@
 **Un langage strict, lisible d'un coup d'œil, pensé pour les humains *et* les IA — et incapable de vous espionner.**
 
 [![CI](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml/badge.svg)](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml)
-![Statut](https://img.shields.io/badge/statut-phase%204%20%C2%B7%20types-orange)
+![Statut](https://img.shields.io/badge/statut-phase%205%20%C2%B7%20structures-orange)
 [![Licence](https://img.shields.io/badge/licence-GPL--3.0-blue)](LICENSE)
 ![Rust](https://img.shields.io/badge/compilateur-Rust-b7410e)
 ![Contributions](https://img.shields.io/badge/contributions-bienvenues-brightgreen)
@@ -95,7 +95,7 @@ cargo build --release
 ./target/release/mcf describe keywords
 ```
 
-> Aujourd'hui MCF **analyse** le code (syntaxe, noms, scopes, imports entre fichiers, types et DualType) mais ne l'**exécute** pas encore. Voir la [feuille de route](ROADMAP.md).
+> Aujourd'hui MCF **analyse** le code (syntaxe, noms, scopes, imports entre fichiers, types, DualType, structures et énumérations) mais ne l'**exécute** pas encore. Voir la [feuille de route](ROADMAP.md).
 
 ## 🤝 Participer
 
@@ -115,7 +115,7 @@ Tout est expliqué dans [CONTRIBUTING.md](CONTRIBUTING.md). Les ⭐ font aussi p
 |---|---|
 | [Cahier des charges 1.2](docs/cahier-des-charges/edition-1.2.md) | Référence du langage, de l'IDE et de la sécurité |
 | [Chiffrement et clés](docs/securite/chiffrement-et-cles.md) | Engagement « aucun accès éditeur », menaces, limites |
-| [Lexique](docs/grammaire/lexique.md) · [Grammaire](docs/grammaire/grammaire.md) · [Résolution des noms](docs/grammaire/resolution-des-noms.md) · [Types](docs/grammaire/types.md) | Ce que le compilateur vérifie aujourd'hui |
+| [Lexique](docs/grammaire/lexique.md) · [Grammaire](docs/grammaire/grammaire.md) · [Résolution des noms](docs/grammaire/resolution-des-noms.md) · [Types](docs/grammaire/types.md) · [Structures](docs/grammaire/structures.md) | Ce que le compilateur vérifie aujourd'hui |
 | [Décisions](docs/DECISIONS.md) | Arbitrages en attente de validation |
 | [Cahier des charges 1.0](docs/cahier-des-charges/edition-1.0.md) | Historique |
 
@@ -124,7 +124,7 @@ Tout est expliqué dans [CONTRIBUTING.md](CONTRIBUTING.md). Les ⭐ font aussi p
 ```text
 compiler/diagnostics   identifiants d'erreurs stables, rendu texte et JSON
 compiler/syntax        lexer, AST, parser
-compiler/semantic      résolution des noms, scopes, imports, types
+compiler/semantic      résolution des noms, scopes, imports, types, structures
 cli                    l'exécutable `mcf`
 tests/conformance      programmes valides / invalides avec l'erreur attendue
 examples               exemples MCF

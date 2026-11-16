@@ -1,0 +1,3 @@
+// attendu: MCF0243
+enum Status { Online, Offline }
+s: Status = Status.Away;

@@ -1,0 +1,5 @@
+// attendu: MCF0230
+enum Level { Low, High }
+func f(_a: Level, _b: Level): Bool {
+    return _a < _b;
+}

@@ -19,6 +19,16 @@ pub enum Ty {
     Map(Box<Ty>, Box<Ty>),
     /// DualType : exactement deux types distincts, jamais imbriqués.
     Dual(Box<Ty>, Box<Ty>),
+    /// Structure déclarée par `struct` (identifiant interne + nom pour les messages).
+    Struct {
+        id: usize,
+        name: String,
+    },
+    /// Énumération déclarée par `enum`.
+    Enum {
+        id: usize,
+        name: String,
+    },
     /// Type non déterminable (erreur déjà signalée, ou valeur pas encore typée comme
     /// le membre d'une valeur). Compatible avec tout pour éviter les cascades d'erreurs.
     Unknown,
@@ -108,6 +118,7 @@ impl fmt::Display for Ty {
             Ty::Map(k, v) if k.is_unknown() && v.is_unknown() => write!(f, "Map"),
             Ty::Map(k, v) => write!(f, "Map<{k}, {v}>"),
             Ty::Dual(a, b) => write!(f, "{a}, {b}"),
+            Ty::Struct { name, .. } | Ty::Enum { name, .. } => write!(f, "{name}"),
             Ty::Unknown => write!(f, "?"),
         }
     }

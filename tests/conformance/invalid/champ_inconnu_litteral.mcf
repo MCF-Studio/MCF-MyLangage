@@ -1,0 +1,5 @@
+// attendu: MCF0241
+struct User {
+    id: Int;
+}
+admin: User = User { id: 1, age: 3 };

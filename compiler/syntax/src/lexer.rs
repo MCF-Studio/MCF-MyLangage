@@ -15,6 +15,8 @@ pub enum TokenKind {
 
     Func,
     Scope,
+    Struct,
+    Enum,
     Import,
     Event,
     On,
@@ -83,6 +85,8 @@ impl TokenKind {
         use TokenKind::*;
         match self {
             Func => "func",
+            Struct => "struct",
+            Enum => "enum",
             Scope => "scope",
             Import => "import",
             Event => "event",
@@ -134,6 +138,8 @@ impl TokenKind {
 
 pub const KEYWORDS: &[(&str, TokenKind)] = &[
     ("func", TokenKind::Func),
+    ("struct", TokenKind::Struct),
+    ("enum", TokenKind::Enum),
     ("scope", TokenKind::Scope),
     ("import", TokenKind::Import),
     ("event", TokenKind::Event),
@@ -165,14 +171,12 @@ pub const RESERVED: &[&str] = &[
     "await",
     "config",
     "const",
-    "enum",
     "interface",
     "let",
     "match",
     "null",
     "secret",
     "set",
-    "struct",
     "switch",
 ];
 

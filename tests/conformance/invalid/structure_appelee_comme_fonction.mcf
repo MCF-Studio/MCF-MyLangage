@@ -1,0 +1,7 @@
+// attendu: MCF0231
+struct User {
+    id: Int;
+}
+func f(): Void {
+    print(User(1));
+}

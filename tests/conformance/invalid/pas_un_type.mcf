@@ -1,0 +1,4 @@
+// attendu: MCF0245
+func helper(): Void {
+}
+x: helper;

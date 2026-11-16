@@ -30,4 +30,7 @@ Le cahier des charges interdit les décisions structurantes silencieuses (§24).
 | D22 | Concaténation | `String + (String, Int, Float, Bool, Char)` → `String` | L'exemple §11 écrit `"Joueur connecté : " + _playerId` ; c'est une règle d'opérateur documentée, pas une conversion générale | 🟡 |
 | D23 | Promotion numérique | `Int` avec `Float` dans `+ - * / %` et les comparaisons → `Float` ; **jamais** à l'affectation (`speed: Float = 180;` refusé) | L'exemple §10 écrit `_points * _multiplier` (Int × Float) | 🟡 |
 | D24 | Narrowing des globales | Autorisé (exemple §6.1), mais annulé après tout appel de fonction MCF ou `emit` | Une fonction appelée peut modifier la globale : on préfère refuser que se tromper | 🟡 |
-| D25 | Membres d'une valeur | Non vérifiés (`Unknown`) tant que les structures n'existent pas | Phase 5 | 🟡 |
+| D25 | Membres d'une valeur | Vérifiés sur les structures ; une valeur d'un type natif n'a aucun membre (MCF0241) tant que des méthodes natives ne sont pas spécifiées | Pas de membre non documenté | 🟡 |
+| D26 | Syntaxe des structures | `struct Nom { champ: Type; }` sans `;` final ; littéral `Nom { champ: valeur }` ; champs sans `_` | 1.0 §5.2 adapté aux conventions 1.2 | 🟡 |
+| D27 | Littéral de structure | Tous les champs obligatoires, aucune valeur par défaut implicite | « Explicite plutôt qu'implicite » | 🟡 |
+| D28 | Énumérations | `enum Nom { A, B }`, variantes sans données, comparables par `==` / `!=` uniquement | Point §24.3 ouvert ; version minimale extensible | 🟡 |

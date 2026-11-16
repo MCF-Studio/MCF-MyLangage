@@ -1,0 +1,3 @@
+// attendu: MCF0246
+enum Status { Online }
+s: Status = Status { };

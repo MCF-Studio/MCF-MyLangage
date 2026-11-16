@@ -1,0 +1,4 @@
+// attendu: MCF0241
+func f(_n: Int): Int {
+    return _n.length;
+}

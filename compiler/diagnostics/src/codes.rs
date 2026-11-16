@@ -54,10 +54,11 @@ codes! {
     CHAINED_COMPARISON = "MCF0113", Syntax, Error, "Comparaisons enchaînées interdites : utiliser `&&`.";
     INVALID_ASSIGNMENT_TARGET = "MCF0114", Syntax, Error, "Le membre gauche d'une affectation doit être une variable, un membre ou un index.";
     STATEMENT_OUTSIDE_FUNCTION = "MCF0115", Syntax, Error, "Instruction exécutable hors d'une fonction ou d'un gestionnaire `on`.";
-    DECLARATION_NOT_ALLOWED_HERE = "MCF0116", Syntax, Error, "Déclaration (func, scope, event, import, on) interdite dans un bloc.";
+    DECLARATION_NOT_ALLOWED_HERE = "MCF0116", Syntax, Error, "Déclaration (func, scope, struct, enum, event, import, on) interdite dans un bloc.";
     MISSING_THEN = "MCF0117", Syntax, Error, "`if (...)` doit être suivi de `then`.";
     MISSING_DO = "MCF0118", Syntax, Error, "Une boucle doit être suivie de `do`.";
     UNCLOSED_DELIMITER = "MCF0119", Syntax, Error, "Délimiteur ouvrant sans fermeture.";
+    INVALID_FIELD_NAME = "MCF0120", Syntax, Error, "Un champ de structure s'écrit sans `_`.";
 
     UNDECLARED_NAME = "MCF0200", Semantic, Error, "Nom utilisé sans déclaration accessible.";
     DUPLICATE_DECLARATION = "MCF0201", Semantic, Error, "Nom déjà déclaré dans le même scope.";
@@ -85,4 +86,12 @@ codes! {
     INTEGER_OVERFLOW = "MCF0229", Type, Error, "Entier hors de la plage de `Int` (64 bits signé).";
     INVALID_OPERANDS = "MCF0230", Type, Error, "Opérateur impossible avec ces types.";
     NOT_CALLABLE = "MCF0231", Type, Error, "Cette valeur n'est pas une fonction.";
+
+    MISSING_FIELD = "MCF0240", Type, Error, "Champ obligatoire absent d'un littéral de structure.";
+    UNKNOWN_FIELD = "MCF0241", Type, Error, "La structure ne possède pas ce champ.";
+    DUPLICATE_FIELD = "MCF0242", Type, Error, "Champ déclaré ou initialisé deux fois.";
+    UNKNOWN_VARIANT = "MCF0243", Type, Error, "L'énumération ne possède pas cette variante.";
+    RECURSIVE_STRUCT = "MCF0244", Type, Error, "Structure qui se contient elle-même : taille infinie.";
+    NOT_A_TYPE = "MCF0245", Type, Error, "Ce nom ne désigne pas un type.";
+    NOT_A_STRUCT = "MCF0246", Type, Error, "Littéral `Nom { ... }` sur autre chose qu'une structure.";
 }

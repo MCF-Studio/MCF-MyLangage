@@ -17,6 +17,8 @@ pub enum Item {
     Import(ImportDecl),
     Event(EventDecl),
     On(OnHandler),
+    Struct(StructDecl),
+    Enum(EnumDecl),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -82,6 +84,36 @@ pub struct FuncDecl {
 pub struct ScopeDecl {
     pub name: Ident,
     pub items: Vec<Item>,
+    pub span: Span,
+}
+
+/// Champ de structure : `name: Type;`
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Field {
+    pub name: Ident,
+    pub ty: TypeDecl,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct StructDecl {
+    pub name: Ident,
+    pub fields: Vec<Field>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EnumDecl {
+    pub name: Ident,
+    pub variants: Vec<Ident>,
+    pub span: Span,
+}
+
+/// `champ: valeur` dans un littéral de structure.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct FieldInit {
+    pub name: Ident,
+    pub value: Expr,
     pub span: Span,
 }
 
@@ -254,6 +286,11 @@ pub enum ExprKind {
     },
     Paren {
         expr: Box<Expr>,
+    },
+    /// `User { id: 1, name: "Alex" }`
+    StructLit {
+        path: Path,
+        fields: Vec<FieldInit>,
     },
     /// Placeholder produit après une erreur pour poursuivre l'analyse.
     Error,

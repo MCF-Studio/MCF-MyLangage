@@ -1,0 +1,4 @@
+// attendu: MCF0201
+struct Int {
+    value: Int;
+}

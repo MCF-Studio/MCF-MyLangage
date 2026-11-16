@@ -1,0 +1,11 @@
+// Un type déclaré dans un autre fichier, importé puis utilisé.
+import Shop;
+
+func price(_item: Shop.Item): Float {
+    return _item.price;
+}
+
+func run(): Void {
+    _sword: Shop.Item = Shop.Item { name: "Épée", price: 12.5 };
+    print(price(_sword));
+}

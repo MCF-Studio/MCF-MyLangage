@@ -1,0 +1,7 @@
+// attendu: MCF0241
+struct User {
+    id: Int;
+}
+func f(_u: User): Int {
+    return _u.age;
+}

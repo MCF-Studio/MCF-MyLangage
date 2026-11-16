@@ -1,0 +1,6 @@
+scope Shop {
+    struct Item {
+        name: String;
+        price: Float;
+    }
+}

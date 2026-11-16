@@ -1,10 +1,14 @@
-//! Analyse sémantique MCF : résolution des noms (phase 3) et vérification des types (phase 4).
+//! Analyse sémantique MCF : résolution des noms (phase 3), types (phase 4),
+//! structures et énumérations (phase 5).
 //!
 //! Visibilité (cahier des charges 1.2, §7 et §8) — détail dans `docs/grammaire/resolution-des-noms.md` :
 //! blocs locaux → scopes englobants → racine du fichier → imports → fonctions natives.
 //!
 //! Types (§5 et §6) — détail dans `docs/grammaire/types.md` : aucune conversion implicite,
 //! DualType limité à deux types, narrowing par `is` suivi de façon conservatrice.
+//!
+//! Passes : 1) déclaration des noms ; 2) imports ; 3) signatures (types des globales, fonctions,
+//! champs, événements — un type peut venir d'un autre fichier) ; 4) structures récursives ; 5) corps.
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,9 +22,6 @@ pub use types::Ty;
 pub const BUILTIN_TYPES: &[&str] = &[
     "Bool", "Int", "Float", "String", "Char", "Byte", "Bytes", "Array", "Map", "DateTime", "Void",
 ];
-
-/// Fonctions natives : nom, nombre d'arguments.
-pub const BUILTIN_FUNCTIONS: &[(&str, usize)] = &[("print", 1), ("sleep", 1)];
 
 pub struct Source {
     pub name: String,
@@ -59,6 +60,8 @@ enum Sym {
     Global { ty: Ty },
     Func { params: Vec<Ty>, ret: Ty },
     Scope { table: usize },
+    Struct { id: usize },
+    Enum { id: usize },
     Builtin(Builtin),
 }
 
@@ -68,6 +71,8 @@ impl Sym {
             Sym::Global { .. } => "une variable",
             Sym::Func { .. } => "une fonction",
             Sym::Scope { .. } => "un scope",
+            Sym::Struct { .. } => "une structure",
+            Sym::Enum { .. } => "une énumération",
             Sym::Builtin(_) => "une fonction native",
         }
     }
@@ -80,6 +85,18 @@ struct Table {
 
 struct EventInfo {
     params: Vec<Ty>,
+}
+
+struct StructInfo {
+    name: String,
+    name_span: Span,
+    file: usize,
+    fields: Vec<(String, Ty)>,
+}
+
+struct EnumInfo {
+    name: String,
+    variants: Vec<String>,
 }
 
 /// Un bloc local : ses variables et les types actifs connus (narrowing) dans ce bloc.
@@ -124,6 +141,9 @@ pub fn analyze(modules: &[&Module]) -> Vec<Vec<Diagnostic>> {
         roots: Vec::new(),
         imports: vec![HashMap::new(); modules.len()],
         events: HashMap::new(),
+        structs: Vec::new(),
+        enums: Vec::new(),
+        rejected: HashSet::new(),
         diags: vec![Vec::new(); modules.len()],
         file: 0,
         frames: Vec::new(),
@@ -142,6 +162,11 @@ pub fn analyze(modules: &[&Module]) -> Vec<Vec<Diagnostic>> {
     }
     for (file, module) in modules.iter().enumerate() {
         a.file = file;
+        a.resolve_signatures(&module.items, a.roots[file]);
+    }
+    a.check_recursive_structs();
+    for (file, module) in modules.iter().enumerate() {
+        a.file = file;
         a.check_items(&module.items, a.roots[file]);
     }
     a.diags
@@ -150,8 +175,13 @@ pub fn analyze(modules: &[&Module]) -> Vec<Vec<Diagnostic>> {
 struct Analyzer {
     tables: Vec<Table>,
     roots: Vec<usize>,
-    imports: Vec<HashMap<String, Sym>>,
+    /// Par fichier : nom importé → (table d'origine, nom). Résolu à la lecture pour voir les types à jour.
+    imports: Vec<HashMap<String, (usize, String)>>,
     events: HashMap<String, EventInfo>,
+    structs: Vec<StructInfo>,
+    enums: Vec<EnumInfo>,
+    /// Déclarations en doublon (fichier, début du nom) : ignorées après le diagnostic.
+    rejected: HashSet<(usize, usize)>,
     diags: Vec<Vec<Diagnostic>>,
     file: usize,
     frames: Vec<Frame>,
@@ -217,22 +247,74 @@ impl Analyzer {
         self.tables.len() - 1
     }
 
+    fn is_rejected(&self, ident: &Ident) -> bool {
+        self.rejected.contains(&(self.file, ident.span.start))
+    }
+
+    fn set_sym(&mut self, table: usize, ident: &Ident, sym: Sym) {
+        if !self.is_rejected(ident) {
+            self.tables[table].names.insert(ident.name.clone(), sym);
+        }
+    }
+
     // ================================================================ types déclarés
 
-    fn type_ref(&mut self, r: &TypeRef, report: bool) -> Ty {
+    /// Résout un chemin `A.B.C` : premier segment selon les règles de visibilité, puis scopes.
+    fn resolve_path(&self, path: &Path, table: usize) -> Option<Sym> {
+        let first = &path.segments[0];
+        let mut sym = match self.lookup(&first.name, table)? {
+            Resolved::Sym(s) => s,
+            _ => return None,
+        };
+        for seg in &path.segments[1..] {
+            let Sym::Scope { table: t } = sym else {
+                return None;
+            };
+            sym = self.tables[t].names.get(&seg.name)?.clone();
+        }
+        Some(sym)
+    }
+
+    fn type_ref(&mut self, r: &TypeRef, table: usize, report: bool) -> Ty {
         let name = path_text(&r.path);
-        let Some(base) = Ty::from_builtin(&name) else {
-            if report {
-                self.report(
-                    Diagnostic::new(
-                        &codes::UNKNOWN_TYPE,
-                        r.path.span,
-                        format!("type inconnu `{name}`"),
-                    )
-                    .expected(BUILTIN_TYPES.join(", ")),
-                );
-            }
-            return Ty::Unknown;
+        let base = match Ty::from_builtin(&name) {
+            Some(b) => b,
+            None => match self.resolve_path(&r.path, table) {
+                Some(Sym::Struct { id }) => Ty::Struct {
+                    id,
+                    name: self.structs[id].name.clone(),
+                },
+                Some(Sym::Enum { id }) => Ty::Enum {
+                    id,
+                    name: self.enums[id].name.clone(),
+                },
+                Some(other) => {
+                    if report {
+                        self.report(Diagnostic::new(
+                            &codes::NOT_A_TYPE,
+                            r.path.span,
+                            format!("`{name}` est {}, pas un type", other.describe()),
+                        ));
+                    }
+                    return Ty::Unknown;
+                }
+                None => {
+                    if report {
+                        self.report(
+                            Diagnostic::new(
+                                &codes::UNKNOWN_TYPE,
+                                r.path.span,
+                                format!("type inconnu `{name}`"),
+                            )
+                            .expected(format!(
+                                "{} ou une structure / énumération déclarée",
+                                BUILTIN_TYPES.join(", ")
+                            )),
+                        );
+                    }
+                    return Ty::Unknown;
+                }
+            },
         };
         let expected_args = match base {
             Ty::Array(_) => &[0usize, 1][..],
@@ -260,10 +342,14 @@ impl Analyzer {
             }
             return Ty::Unknown;
         }
-        let mut args: Vec<Ty> = r.args.iter().map(|a| self.type_ref(a, report)).collect();
+        let mut args: Vec<Ty> = r
+            .args
+            .iter()
+            .map(|a| self.type_ref(a, table, report))
+            .collect();
         if report {
             for (arg, ty) in r.args.iter().zip(&args) {
-                if matches!(ty, Ty::Void | Ty::Dual(..)) {
+                if *ty == Ty::Void {
                     self.report(Diagnostic::new(
                         &codes::VOID_NOT_ALLOWED,
                         arg.span,
@@ -283,11 +369,11 @@ impl Analyzer {
     }
 
     /// Type d'une déclaration `T` ou `T1, T2`. `Void` n'est accepté que seul et si `allow_void`.
-    fn type_decl(&mut self, decl: &TypeDecl, allow_void: bool, report: bool) -> Ty {
+    fn type_decl(&mut self, decl: &TypeDecl, table: usize, allow_void: bool, report: bool) -> Ty {
         let tys: Vec<Ty> = decl
             .types
             .iter()
-            .map(|t| self.type_ref(t, report))
+            .map(|t| self.type_ref(t, table, report))
             .collect();
         if report {
             for (r, ty) in decl.types.iter().zip(&tys) {
@@ -329,18 +415,22 @@ impl Analyzer {
         }
     }
 
-    // ================================================================ passe 1 : déclarations
+    // ================================================================ passe 1 : noms
 
     fn declare(&mut self, table: usize, ident: &Ident, sym: Sym) {
-        if self.tables[table].names.contains_key(&ident.name) {
+        let clash_builtin = matches!(sym, Sym::Struct { .. } | Sym::Enum { .. })
+            && BUILTIN_TYPES.contains(&ident.name.as_str());
+        if clash_builtin || self.tables[table].names.contains_key(&ident.name) {
+            let message = if clash_builtin {
+                format!("`{}` est le nom d'un type natif", ident.name)
+            } else {
+                format!("`{}` est déjà déclaré dans ce scope", ident.name)
+            };
             self.report(
-                Diagnostic::new(
-                    &codes::DUPLICATE_DECLARATION,
-                    ident.span,
-                    format!("`{}` est déjà déclaré dans ce scope", ident.name),
-                )
-                .suggestion("renommer l'un des deux, ou les ranger dans des scopes différents"),
+                Diagnostic::new(&codes::DUPLICATE_DECLARATION, ident.span, message)
+                    .suggestion("renommer l'un des deux, ou les ranger dans des scopes différents"),
             );
+            self.rejected.insert((self.file, ident.span.start));
             return;
         }
         self.tables[table].names.insert(ident.name.clone(), sym);
@@ -349,44 +439,66 @@ impl Analyzer {
     fn declare_items(&mut self, items: &[Item], table: usize) {
         for item in items {
             match item {
-                Item::Global(v) => {
-                    let ty = self.type_decl(&v.ty, false, true);
-                    self.declare(table, &v.name, Sym::Global { ty });
-                }
-                Item::Func(f) => {
-                    let params = f
-                        .params
-                        .iter()
-                        .map(|p| self.type_decl(&p.ty, false, true))
-                        .collect();
-                    let ret = match &f.ret {
-                        Some(r) => self.type_decl(r, true, true),
-                        None => Ty::Unknown,
-                    };
-                    self.declare(table, &f.name, Sym::Func { params, ret });
-                }
+                Item::Global(v) => self.declare(table, &v.name, Sym::Global { ty: Ty::Unknown }),
+                Item::Func(f) => self.declare(
+                    table,
+                    &f.name,
+                    Sym::Func {
+                        params: vec![Ty::Unknown; f.params.len()],
+                        ret: Ty::Unknown,
+                    },
+                ),
                 Item::Scope(s) => {
                     let child = self.new_table(Some(table));
                     self.declare(table, &s.name, Sym::Scope { table: child });
                     self.declare_items(&s.items, child);
                 }
+                Item::Struct(s) => {
+                    let id = self.structs.len();
+                    self.structs.push(StructInfo {
+                        name: s.name.name.clone(),
+                        name_span: s.name.span,
+                        file: self.file,
+                        fields: Vec::new(),
+                    });
+                    self.declare(table, &s.name, Sym::Struct { id });
+                }
+                Item::Enum(e) => {
+                    let mut variants: Vec<String> = Vec::new();
+                    for v in &e.variants {
+                        if variants.contains(&v.name) {
+                            self.report(Diagnostic::new(
+                                &codes::DUPLICATE_FIELD,
+                                v.span,
+                                format!("la variante `{}` est déclarée deux fois", v.name),
+                            ));
+                        } else {
+                            variants.push(v.name.clone());
+                        }
+                    }
+                    let id = self.enums.len();
+                    self.enums.push(EnumInfo {
+                        name: e.name.name.clone(),
+                        variants,
+                    });
+                    self.declare(table, &e.name, Sym::Enum { id });
+                }
                 Item::Event(e) => {
-                    let params = e
-                        .params
-                        .iter()
-                        .map(|p| self.type_decl(&p.ty, false, true))
-                        .collect();
                     let name = path_text(&e.name);
                     if let std::collections::hash_map::Entry::Vacant(slot) =
                         self.events.entry(name.clone())
                     {
-                        slot.insert(EventInfo { params });
+                        slot.insert(EventInfo {
+                            params: vec![Ty::Unknown; e.params.len()],
+                        });
                     } else {
                         self.report(Diagnostic::new(
                             &codes::DUPLICATE_DECLARATION,
                             e.name.span,
                             format!("l'événement `{name}` est déjà déclaré dans le projet"),
                         ));
+                        let last = &e.name.segments[e.name.segments.len() - 1];
+                        self.rejected.insert((self.file, last.span.start));
                     }
                 }
                 Item::Import(_) | Item::On(_) => {}
@@ -396,8 +508,8 @@ impl Analyzer {
 
     // ================================================================ passe 2 : imports
 
-    /// Cherche `segments` à partir de la racine de chaque autre fichier.
-    fn find_exported(&self, segments: &[Ident]) -> Vec<Sym> {
+    /// Cherche `segments` à partir de la racine de chaque autre fichier : (table, nom).
+    fn find_exported(&self, segments: &[Ident]) -> Vec<(usize, String)> {
         let mut found = Vec::new();
         for (file, &root) in self.roots.iter().enumerate() {
             if file == self.file {
@@ -407,7 +519,7 @@ impl Analyzer {
             for (i, seg) in segments.iter().enumerate() {
                 match self.tables[table].names.get(&seg.name) {
                     Some(Sym::Scope { table: t }) if i + 1 < segments.len() => table = *t,
-                    Some(s) if i + 1 == segments.len() => found.push(s.clone()),
+                    Some(_) if i + 1 == segments.len() => found.push((table, seg.name.clone())),
                     _ => break,
                 }
             }
@@ -462,12 +574,124 @@ impl Analyzer {
         }
     }
 
-    // ================================================================ passe 3 : corps
+    // ================================================================ passe 3 : signatures
+
+    fn resolve_signatures(&mut self, items: &[Item], table: usize) {
+        for item in items {
+            match item {
+                Item::Global(v) => {
+                    let ty = self.type_decl(&v.ty, table, false, true);
+                    self.set_sym(table, &v.name, Sym::Global { ty });
+                }
+                Item::Func(f) => {
+                    let params = f
+                        .params
+                        .iter()
+                        .map(|p| self.type_decl(&p.ty, table, false, true))
+                        .collect();
+                    let ret = match &f.ret {
+                        Some(r) => self.type_decl(r, table, true, true),
+                        None => Ty::Unknown,
+                    };
+                    self.set_sym(table, &f.name, Sym::Func { params, ret });
+                }
+                Item::Scope(s) => {
+                    if let Some(Sym::Scope { table: child }) =
+                        self.tables[table].names.get(&s.name.name).cloned()
+                    {
+                        if !self.is_rejected(&s.name) {
+                            self.resolve_signatures(&s.items, child);
+                        }
+                    }
+                }
+                Item::Struct(s) => {
+                    let mut fields: Vec<(String, Ty)> = Vec::new();
+                    for f in &s.fields {
+                        let ty = self.type_decl(&f.ty, table, false, true);
+                        if fields.iter().any(|(n, _)| *n == f.name.name) {
+                            self.report(Diagnostic::new(
+                                &codes::DUPLICATE_FIELD,
+                                f.name.span,
+                                format!("le champ `{}` est déclaré deux fois", f.name.name),
+                            ));
+                        } else {
+                            fields.push((f.name.name.clone(), ty));
+                        }
+                    }
+                    if !self.is_rejected(&s.name) {
+                        if let Some(Sym::Struct { id }) = self.tables[table].names.get(&s.name.name)
+                        {
+                            let id = *id;
+                            self.structs[id].fields = fields;
+                        }
+                    }
+                }
+                Item::Event(e) => {
+                    let params: Vec<Ty> = e
+                        .params
+                        .iter()
+                        .map(|p| self.type_decl(&p.ty, table, false, true))
+                        .collect();
+                    let last = &e.name.segments[e.name.segments.len() - 1];
+                    if !self.is_rejected(last) {
+                        if let Some(info) = self.events.get_mut(&path_text(&e.name)) {
+                            info.params = params;
+                        }
+                    }
+                }
+                Item::Enum(_) | Item::Import(_) | Item::On(_) => {}
+            }
+        }
+    }
+
+    // ================================================================ passe 4 : récursion
+
+    /// Une structure qui se contient elle-même (directement, via d'autres structures ou un
+    /// DualType) aurait une taille infinie. Passer par `Array<T>` est autorisé.
+    fn check_recursive_structs(&mut self) {
+        fn reaches(
+            structs: &[StructInfo],
+            from: usize,
+            target: usize,
+            seen: &mut HashSet<usize>,
+        ) -> bool {
+            if !seen.insert(from) {
+                return false;
+            }
+            structs[from].fields.iter().any(|(_, ty)| {
+                ty.members().iter().any(|m| match m {
+                    Ty::Struct { id, .. } => *id == target || reaches(structs, *id, target, seen),
+                    _ => false,
+                })
+            })
+        }
+        for id in 0..self.structs.len() {
+            if reaches(&self.structs, id, id, &mut HashSet::new()) {
+                let (file, span, name) = {
+                    let s = &self.structs[id];
+                    (s.file, s.name_span, s.name.clone())
+                };
+                self.diags[file].push(
+                    Diagnostic::new(
+                        &codes::RECURSIVE_STRUCT,
+                        span,
+                        format!("la structure `{name}` se contient elle-même : sa taille serait infinie"),
+                    )
+                    .suggestion("passer par une collection, ex. `children: Array<Node>;`"),
+                );
+            }
+        }
+    }
+
+    // ================================================================ passe 5 : corps
 
     fn check_items(&mut self, items: &[Item], table: usize) {
         for item in items {
             match item {
                 Item::Global(v) => {
+                    if self.is_rejected(&v.name) {
+                        continue;
+                    }
                     if let (Some(init), Some(Sym::Global { ty })) =
                         (&v.init, self.tables[table].names.get(&v.name.name).cloned())
                     {
@@ -476,9 +700,12 @@ impl Analyzer {
                     }
                 }
                 Item::Func(f) => {
+                    if self.is_rejected(&f.name) {
+                        continue;
+                    }
                     let (params, ret) = match self.tables[table].names.get(&f.name.name) {
                         Some(Sym::Func { params, ret }) => (params.clone(), ret.clone()),
-                        _ => continue, // doublon déjà signalé
+                        _ => continue,
                     };
                     self.enter_body(ret.clone());
                     for (p, ty) in f.params.iter().zip(params) {
@@ -504,6 +731,9 @@ impl Analyzer {
                     self.leave_body();
                 }
                 Item::Scope(s) => {
+                    if self.is_rejected(&s.name) {
+                        continue;
+                    }
                     if let Some(Sym::Scope { table: child }) =
                         self.tables[table].names.get(&s.name.name).cloned()
                     {
@@ -528,7 +758,7 @@ impl Analyzer {
                     self.check_block_in_current_frame(&h.body, table);
                     self.leave_body();
                 }
-                Item::Import(_) => {}
+                Item::Struct(_) | Item::Enum(_) | Item::Import(_) => {}
             }
         }
     }
@@ -593,7 +823,9 @@ impl Analyzer {
         if value.is_dual() {
             d = d.suggestion("vérifier d'abord le type actif : `if (valeur is Type) then { ... }`");
         } else if value.is_numeric() && target.is_numeric() {
-            d = d.suggestion("pas de conversion implicite entre Int et Float : écrire `2.0` plutôt que `2`, par exemple");
+            d = d.suggestion(
+                "pas de conversion implicite entre Int et Float : écrire `2.0` plutôt que `2`, par exemple",
+            );
         }
         self.report(d);
     }
@@ -677,7 +909,7 @@ impl Analyzer {
                     return (vec![], vec![]);
                 };
                 let current = self.active_ty(&ident.name, &declared);
-                let tested = self.type_ref(ty, false);
+                let tested = self.type_ref(ty, table, false);
                 let members = current.members();
                 if !current.is_dual() || !members.iter().any(|m| m.same(&tested)) {
                     return (vec![], vec![]);
@@ -737,8 +969,8 @@ impl Analyzer {
             }
             t = self.tables[id].parent;
         }
-        if let Some(sym) = self.imports[self.file].get(name) {
-            return Some(Resolved::Sym(sym.clone()));
+        if let Some((t, n)) = self.imports[self.file].get(name) {
+            return self.tables[*t].names.get(n).cloned().map(Resolved::Sym);
         }
         match name {
             "print" => Some(Resolved::Sym(Sym::Builtin(Builtin::Print))),
@@ -777,7 +1009,9 @@ impl Analyzer {
                 ident.name
             ));
         } else if ident.is_local() {
-            d = d.suggestion("une variable locale doit être déclarée avant usage, dans ce bloc ou un bloc parent");
+            d = d.suggestion(
+                "une variable locale doit être déclarée avant usage, dans ce bloc ou un bloc parent",
+            );
         }
         self.report(d);
     }
@@ -929,6 +1163,11 @@ impl Analyzer {
                     self.scan_expr(i, table, calls);
                 }
             }
+            ExprKind::StructLit { fields, .. } => {
+                for f in fields {
+                    self.scan_expr(&f.value, table, calls);
+                }
+            }
             _ => {}
         }
     }
@@ -942,7 +1181,7 @@ impl Analyzer {
     fn check_stmt(&mut self, stmt: &Stmt, table: usize) {
         match stmt {
             Stmt::Local(v) => {
-                let ty = self.type_decl(&v.ty, false, true);
+                let ty = self.type_decl(&v.ty, table, false, true);
                 // L'initialisation est vérifiée avant la déclaration : `_x: Int = _x;` est refusé.
                 let init_ty = v.init.as_ref().map(|init| {
                     let value = self.check_expr(init, table);
@@ -962,7 +1201,11 @@ impl Analyzer {
             Stmt::Assign { target, value, .. } => {
                 let t = self.check_expr(target, table);
                 if let Resolved::Sym(
-                    sym @ (Sym::Func { .. } | Sym::Scope { .. } | Sym::Builtin(_)),
+                    sym @ (Sym::Func { .. }
+                    | Sym::Scope { .. }
+                    | Sym::Builtin(_)
+                    | Sym::Struct { .. }
+                    | Sym::Enum { .. }),
                 ) = &t.res
                 {
                     self.report(Diagnostic::new(
@@ -1032,7 +1275,7 @@ impl Analyzer {
                 };
                 let binding_ty = match ty {
                     Some(decl) => {
-                        let declared = self.type_decl(decl, false, true);
+                        let declared = self.type_decl(decl, table, false, true);
                         self.expect_assignable(&element, &declared, binding.span);
                         declared
                     }
@@ -1147,35 +1390,9 @@ impl Analyzer {
                     Typed::value(Ty::Unknown)
                 }
             },
-            ExprKind::Member { object, field } => {
-                let obj = self.check_expr(object, table);
-                match obj.res {
-                    Resolved::Sym(Sym::Scope { table: scope }) => {
-                        match self.tables[scope].names.get(&field.name).cloned() {
-                            Some(sym) => {
-                                let declared = match &sym {
-                                    Sym::Global { ty } => ty.clone(),
-                                    _ => Ty::Unknown,
-                                };
-                                Typed {
-                                    res: Resolved::Sym(sym),
-                                    ty: declared.clone(),
-                                    declared,
-                                }
-                            }
-                            None => {
-                                self.report(Diagnostic::new(
-                                    &codes::UNKNOWN_MEMBER,
-                                    field.span,
-                                    format!("le scope ne contient pas `{}`", field.name),
-                                ));
-                                Typed::value(Ty::Unknown)
-                            }
-                        }
-                    }
-                    // Membre d'une valeur : vérifié avec les structures (phase 5).
-                    _ => Typed::value(Ty::Unknown),
-                }
+            ExprKind::Member { object, field } => self.check_member(object, field, table),
+            ExprKind::StructLit { path, fields } => {
+                self.check_struct_lit(path, fields, expr.span, table)
             }
             ExprKind::Call { callee, args } => self.check_call(expr, callee, args, table),
             ExprKind::Index { object, index } => {
@@ -1238,7 +1455,7 @@ impl Analyzer {
             }
             ExprKind::Is { expr: inner, ty } => {
                 let t = self.check_expr(inner, table).ty;
-                let tested = self.type_ref(ty, true);
+                let tested = self.type_ref(ty, table, true);
                 if !t.is_unknown() && !tested.is_unknown() {
                     let possible = t.members().iter().any(|m| m.same(&tested));
                     if !possible {
@@ -1281,6 +1498,192 @@ impl Analyzer {
                 Typed::value(Ty::Array(Box::new(element)))
             }
         }
+    }
+
+    fn check_member(&mut self, object: &Expr, field: &Ident, table: usize) -> Typed {
+        let obj = self.check_expr(object, table);
+        match (&obj.res, &obj.ty) {
+            // `Scope.membre`
+            (Resolved::Sym(Sym::Scope { table: scope }), _) => {
+                match self.tables[*scope].names.get(&field.name).cloned() {
+                    Some(sym) => {
+                        let declared = match &sym {
+                            Sym::Global { ty } => ty.clone(),
+                            _ => Ty::Unknown,
+                        };
+                        Typed {
+                            res: Resolved::Sym(sym),
+                            ty: declared.clone(),
+                            declared,
+                        }
+                    }
+                    None => {
+                        self.report(Diagnostic::new(
+                            &codes::UNKNOWN_MEMBER,
+                            field.span,
+                            format!("le scope ne contient pas `{}`", field.name),
+                        ));
+                        Typed::value(Ty::Unknown)
+                    }
+                }
+            }
+            // `Enum.Variante`
+            (Resolved::Sym(Sym::Enum { id }), _) => {
+                let info = &self.enums[*id];
+                let ty = Ty::Enum {
+                    id: *id,
+                    name: info.name.clone(),
+                };
+                if !info.variants.contains(&field.name) {
+                    let list = info.variants.join(", ");
+                    let name = info.name.clone();
+                    self.report(
+                        Diagnostic::new(
+                            &codes::UNKNOWN_VARIANT,
+                            field.span,
+                            format!(
+                                "l'énumération `{name}` n'a pas de variante `{}`",
+                                field.name
+                            ),
+                        )
+                        .expected(list),
+                    );
+                }
+                Typed::value(ty)
+            }
+            // `valeur.champ`
+            (_, Ty::Struct { id, name }) => {
+                match self.structs[*id]
+                    .fields
+                    .iter()
+                    .find(|(n, _)| *n == field.name)
+                {
+                    Some((_, ty)) => Typed {
+                        res: Resolved::Opaque,
+                        ty: ty.clone(),
+                        declared: ty.clone(),
+                    },
+                    None => {
+                        let list = self.structs[*id]
+                            .fields
+                            .iter()
+                            .map(|(n, _)| n.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let name = name.clone();
+                        self.report(
+                            Diagnostic::new(
+                                &codes::UNKNOWN_FIELD,
+                                field.span,
+                                format!("la structure `{name}` n'a pas de champ `{}`", field.name),
+                            )
+                            .expected(list),
+                        );
+                        Typed::value(Ty::Unknown)
+                    }
+                }
+            }
+            (_, Ty::Unknown) => Typed::value(Ty::Unknown),
+            (_, other) => {
+                let other = other.clone();
+                if other.is_dual() {
+                    self.not_narrowed_or_invalid(&other, object.span, ".");
+                } else {
+                    self.report(Diagnostic::new(
+                        &codes::UNKNOWN_FIELD,
+                        field.span,
+                        format!("une valeur `{other}` n'a pas de membre `{}`", field.name),
+                    ));
+                }
+                Typed::value(Ty::Unknown)
+            }
+        }
+    }
+
+    fn check_struct_lit(
+        &mut self,
+        path: &Path,
+        fields: &[FieldInit],
+        span: Span,
+        table: usize,
+    ) -> Typed {
+        let name = path_text(path);
+        let id = match self.resolve_path(path, table) {
+            Some(Sym::Struct { id }) => id,
+            Some(other) => {
+                self.report(Diagnostic::new(
+                    &codes::NOT_A_STRUCT,
+                    path.span,
+                    format!("`{name}` est {}, pas une structure", other.describe()),
+                ));
+                for f in fields {
+                    self.check_expr(&f.value, table);
+                }
+                return Typed::value(Ty::Unknown);
+            }
+            None => {
+                self.undeclared(&path.segments[0]);
+                for f in fields {
+                    self.check_expr(&f.value, table);
+                }
+                return Typed::value(Ty::Unknown);
+            }
+        };
+        let declared = self.structs[id].fields.clone();
+        let mut seen: Vec<&str> = Vec::new();
+        for f in fields {
+            let value = self.check_expr(&f.value, table);
+            if seen.contains(&f.name.name.as_str()) {
+                self.report(Diagnostic::new(
+                    &codes::DUPLICATE_FIELD,
+                    f.name.span,
+                    format!("le champ `{}` est initialisé deux fois", f.name.name),
+                ));
+                continue;
+            }
+            seen.push(&f.name.name);
+            match declared.iter().find(|(n, _)| *n == f.name.name) {
+                Some((_, ty)) => self.expect_assignable(&value.ty, ty, f.value.span),
+                None => self.report(
+                    Diagnostic::new(
+                        &codes::UNKNOWN_FIELD,
+                        f.name.span,
+                        format!("la structure `{name}` n'a pas de champ `{}`", f.name.name),
+                    )
+                    .expected(
+                        declared
+                            .iter()
+                            .map(|(n, _)| n.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ),
+            }
+        }
+        let missing: Vec<&str> = declared
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .filter(|n| !seen.contains(n))
+            .collect();
+        if !missing.is_empty() {
+            self.report(
+                Diagnostic::new(
+                    &codes::MISSING_FIELD,
+                    span,
+                    format!(
+                        "champ(s) manquant(s) pour `{name}` : {}",
+                        missing.join(", ")
+                    ),
+                )
+                .suggestion(
+                    "chaque champ doit recevoir une valeur : pas de valeur par défaut implicite",
+                ),
+            );
+        }
+        Typed::value(Ty::Struct {
+            id,
+            name: self.structs[id].name.clone(),
+        })
     }
 
     fn check_call(&mut self, expr: &Expr, callee: &Expr, args: &[Expr], table: usize) -> Typed {
@@ -1335,11 +1738,15 @@ impl Analyzer {
             }
             Resolved::Opaque if c.ty.is_unknown() => Ty::Unknown,
             _ => {
-                self.report(Diagnostic::new(
+                let mut d = Diagnostic::new(
                     &codes::NOT_CALLABLE,
                     callee.span,
                     "cette expression n'est pas une fonction",
-                ));
+                );
+                if let Resolved::Sym(Sym::Struct { .. }) = c.res {
+                    d = d.suggestion("une structure se crée avec `Nom { champ: valeur, ... }`");
+                }
+                self.report(d);
                 Ty::Unknown
             }
         };
