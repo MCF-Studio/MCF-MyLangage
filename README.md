@@ -5,7 +5,8 @@
 **Un langage strict, lisible d'un coup d'œil, pensé pour les humains *et* les IA — et incapable de vous espionner.**
 
 [![CI](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml/badge.svg)](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml)
-![Statut](https://img.shields.io/badge/statut-phase%203%20%C2%B7%20r%C3%A9solution%20des%20noms-orange)
+![Statut](https://img.shields.io/badge/statut-phase%204%20%C2%B7%20types-orange)
+[![Licence](https://img.shields.io/badge/licence-GPL--3.0-blue)](LICENSE)
 ![Rust](https://img.shields.io/badge/compilateur-Rust-b7410e)
 ![Contributions](https://img.shields.io/badge/contributions-bienvenues-brightgreen)
 
@@ -94,7 +95,7 @@ cargo build --release
 ./target/release/mcf describe keywords
 ```
 
-> Aujourd'hui MCF **analyse** le code (syntaxe, résolution des noms, scopes et imports entre fichiers) mais ne l'**exécute** pas encore. Voir la [feuille de route](ROADMAP.md).
+> Aujourd'hui MCF **analyse** le code (syntaxe, noms, scopes, imports entre fichiers, types et DualType) mais ne l'**exécute** pas encore. Voir la [feuille de route](ROADMAP.md).
 
 ## 🤝 Participer
 
@@ -114,7 +115,7 @@ Tout est expliqué dans [CONTRIBUTING.md](CONTRIBUTING.md). Les ⭐ font aussi p
 |---|---|
 | [Cahier des charges 1.2](docs/cahier-des-charges/edition-1.2.md) | Référence du langage, de l'IDE et de la sécurité |
 | [Chiffrement et clés](docs/securite/chiffrement-et-cles.md) | Engagement « aucun accès éditeur », menaces, limites |
-| [Lexique](docs/grammaire/lexique.md) · [Grammaire](docs/grammaire/grammaire.md) · [Résolution des noms](docs/grammaire/resolution-des-noms.md) | Ce que le compilateur vérifie aujourd'hui |
+| [Lexique](docs/grammaire/lexique.md) · [Grammaire](docs/grammaire/grammaire.md) · [Résolution des noms](docs/grammaire/resolution-des-noms.md) · [Types](docs/grammaire/types.md) | Ce que le compilateur vérifie aujourd'hui |
 | [Décisions](docs/DECISIONS.md) | Arbitrages en attente de validation |
 | [Cahier des charges 1.0](docs/cahier-des-charges/edition-1.0.md) | Historique |
 
@@ -123,7 +124,7 @@ Tout est expliqué dans [CONTRIBUTING.md](CONTRIBUTING.md). Les ⭐ font aussi p
 ```text
 compiler/diagnostics   identifiants d'erreurs stables, rendu texte et JSON
 compiler/syntax        lexer, AST, parser
-compiler/semantic      résolution des noms, scopes, imports
+compiler/semantic      résolution des noms, scopes, imports, types
 cli                    l'exécutable `mcf`
 tests/conformance      programmes valides / invalides avec l'erreur attendue
 examples               exemples MCF
@@ -132,6 +133,13 @@ docs                   spécifications
 
 ## Licence
 
-Pas encore de licence : le code est public pour être lu, testé et audité, tous droits réservés à MCF Studio. Le choix d'une licence est suivi dans [DECISIONS.md](docs/DECISIONS.md) (D17).
+MCF est publié sous **[GNU GPL v3](LICENSE)** (GPL-3.0-only) — © MCF Studio.
+
+En clair :
+- ✅ tu peux utiliser MCF, l'étudier, le partager ;
+- 🔁 si tu le modifies et que tu distribues ta version, tu dois la publier sous la même licence, avec son code source ;
+- 👑 MCF Studio reste l'auteur et le mainteneur du projet : le nom MCF et la direction du langage lui appartiennent.
+
+Le texte de la licence fait foi ; ce résumé n'en est qu'une lecture rapide.
 
 [MCF Studio]: https://mcfstudio.fr

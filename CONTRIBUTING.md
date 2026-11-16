@@ -37,4 +37,6 @@ cargo test --workspace
 
 ## Licence des contributions
 
-Aucune licence n'est encore choisie pour le projet (voir D17 dans [DECISIONS.md](docs/DECISIONS.md)). En attendant, les issues, idées et retours sont les bienvenus ; pour le code, on clarifiera les conditions avant de fusionner les premières contributions externes.
+MCF est sous [GPL-3.0-only](LICENSE), © MCF Studio. En proposant une contribution (PR, patch), tu acceptes qu'elle soit publiée sous cette licence, et que MCF Studio reste le mainteneur qui décide de ce qui est intégré au langage.
+
+Ajoute une ligne `Signed-off-by: Ton Nom <email>` à tes commits (`git commit -s`) pour certifier que tu as le droit de proposer ce code ([Developer Certificate of Origin](https://developercertificate.org/)).
