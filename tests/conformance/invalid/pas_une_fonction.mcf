@@ -1,0 +1,5 @@
+// attendu: MCF0231
+name: String = "MCF";
+func f(): Void {
+    name();
+}

@@ -1,0 +1,9 @@
+// attendu: MCF0221
+func f(_v: Bool, Int): Void {
+    if (_v is Int) then {
+        while (true) do {
+            print(_v + 1);
+            _v = false;
+        }
+    }
+}

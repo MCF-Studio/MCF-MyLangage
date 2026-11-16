@@ -1,0 +1,44 @@
+// Vérification des types (§5, §6) : narrowing, concaténation, promotion Int/Float, retours.
+playerState: Bool, Int = true;
+names: Array<String> = ["Alex", "Max"];
+scores: Map<String, Int>;
+
+func describe(_value: Int, String): String {
+    if (_value is Int) then {
+        return "nombre " + _value;
+    }
+    else {
+        return "texte " + _value;
+    }
+}
+
+func level(_points: Int): Int {
+    if (_points > 100) then {
+        return 3;
+    }
+    else if (_points > 10) then {
+        return 2;
+    }
+    return 1;
+}
+
+func run(): Void {
+    _mixed: Bool, Int = 5;
+    print(_mixed + 1);
+    _mixed = false;
+    print(!_mixed);
+
+    if (playerState is Int && playerState > 3) then {
+        print(playerState * 2);
+    }
+
+    _first: String = names[0];
+    _score: Int = scores["Alex"];
+    _ratio: Float = _score / 2.5;
+    print(_first + " " + _ratio);
+
+    foreach (_name: String in names) do {
+        print(describe(_name));
+    }
+    sleep(level(_score));
+}

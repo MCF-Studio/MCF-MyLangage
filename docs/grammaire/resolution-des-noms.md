@@ -1,5 +1,7 @@
 # Résolution des noms (phase 3)
 
+La vérification des types est décrite dans [types.md](types.md).
+
 Implémentée par `compiler/semantic`. Base : cahier des charges 1.2, §7 et §8.
 
 ## Projet

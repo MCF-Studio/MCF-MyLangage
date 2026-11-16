@@ -1,0 +1,5 @@
+// attendu: MCF0220
+playerState: Bool, Int = true;
+func f(): Void {
+    playerState = "online";
+}

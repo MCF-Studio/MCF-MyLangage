@@ -1,0 +1,2 @@
+// attendu: MCF0220
+values: Array<Int> = [1, "deux", 3];

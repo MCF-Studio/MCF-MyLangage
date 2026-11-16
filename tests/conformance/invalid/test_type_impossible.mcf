@@ -1,0 +1,4 @@
+// attendu: MCF0222
+func f(_v: Bool, Int): Bool {
+    return _v is String;
+}

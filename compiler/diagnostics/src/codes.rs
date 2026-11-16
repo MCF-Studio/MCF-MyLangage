@@ -72,4 +72,17 @@ codes! {
     ARGUMENT_COUNT_MISMATCH = "MCF0210", Semantic, Error, "Nombre d'arguments incorrect.";
     LOOP_CONTROL_OUTSIDE_LOOP = "MCF0211", Semantic, Error, "`break` ou `continue` hors d'une boucle.";
     NOT_ASSIGNABLE = "MCF0212", Semantic, Error, "Une fonction, un scope ou une fonction native ne peut pas recevoir de valeur.";
+
+    TYPE_MISMATCH = "MCF0220", Type, Error, "Le type de la valeur ne correspond pas au type attendu.";
+    DUAL_TYPE_NOT_NARROWED = "MCF0221", Type, Error, "Valeur DualType utilisée sans vérifier son type actif (`is`).";
+    IMPOSSIBLE_TYPE_TEST = "MCF0222", Type, Error, "Test `is` vers un type que la valeur ne peut jamais avoir.";
+    TYPE_TEST_ALWAYS_TRUE = "MCF0223", Type, Warning, "Test `is` toujours vrai.";
+    MISSING_RETURN_VALUE = "MCF0224", Type, Error, "`return;` sans valeur dans une fonction qui doit retourner une valeur.";
+    UNEXPECTED_RETURN_VALUE = "MCF0225", Type, Error, "`return` avec une valeur dans une fonction `Void`.";
+    MISSING_RETURN = "MCF0226", Type, Error, "Un chemin de la fonction se termine sans `return`.";
+    VOID_NOT_ALLOWED = "MCF0227", Type, Error, "`Void` n'est autorisé que comme type de retour seul.";
+    WRONG_TYPE_ARGUMENTS = "MCF0228", Type, Error, "Nombre d'arguments de type générique incorrect.";
+    INTEGER_OVERFLOW = "MCF0229", Type, Error, "Entier hors de la plage de `Int` (64 bits signé).";
+    INVALID_OPERANDS = "MCF0230", Type, Error, "Opérateur impossible avec ces types.";
+    NOT_CALLABLE = "MCF0231", Type, Error, "Cette valeur n'est pas une fonction.";
 }

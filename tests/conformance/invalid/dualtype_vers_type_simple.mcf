@@ -1,0 +1,4 @@
+// attendu: MCF0220
+func f(_v: Bool, Int): Int {
+    return _v;
+}

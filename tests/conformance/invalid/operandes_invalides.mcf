@@ -1,0 +1,4 @@
+// attendu: MCF0230
+func f(): Bool {
+    return true + 1;
+}

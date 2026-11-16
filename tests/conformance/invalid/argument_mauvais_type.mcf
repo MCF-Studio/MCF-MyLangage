@@ -1,0 +1,7 @@
+// attendu: MCF0220
+func double(_n: Int): Int {
+    return _n * 2;
+}
+func f(): Void {
+    print(double("2"));
+}

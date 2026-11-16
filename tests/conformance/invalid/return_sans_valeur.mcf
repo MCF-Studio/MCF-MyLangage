@@ -1,0 +1,4 @@
+// attendu: MCF0224
+func f(): Int {
+    return;
+}

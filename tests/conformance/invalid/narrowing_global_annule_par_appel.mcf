@@ -1,0 +1,11 @@
+// attendu: MCF0221
+state: Bool, Int = 1;
+func reset(): Void {
+    state = false;
+}
+func f(): Void {
+    if (state is Int) then {
+        reset();
+        print(state + 1);
+    }
+}

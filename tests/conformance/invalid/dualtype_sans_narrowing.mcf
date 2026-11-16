@@ -1,0 +1,5 @@
+// attendu: MCF0221
+playerState: Bool, Int = true;
+func f(): Int {
+    return playerState + 10;
+}

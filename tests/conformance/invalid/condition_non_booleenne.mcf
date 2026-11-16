@@ -1,0 +1,6 @@
+// attendu: MCF0220
+func f(_n: Int): Void {
+    if (_n) then {
+        print(_n);
+    }
+}

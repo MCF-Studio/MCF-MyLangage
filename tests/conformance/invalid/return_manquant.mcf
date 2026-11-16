@@ -1,0 +1,6 @@
+// attendu: MCF0226
+func f(_a: Bool): Int {
+    if (_a) then {
+        return 1;
+    }
+}

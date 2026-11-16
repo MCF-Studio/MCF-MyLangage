@@ -1,26 +1,25 @@
-//! Analyse sémantique MCF — phase 3 : résolution des noms, scopes et imports.
+//! Analyse sémantique MCF : résolution des noms (phase 3) et vérification des types (phase 4).
 //!
-//! Règles de visibilité (cahier des charges 1.2, §7 et §8) :
-//! - un enfant voit les variables de ses parents, jamais l'inverse ;
-//! - les globales et fonctions d'un fichier sont visibles dans tout ce fichier, quel que soit l'ordre ;
-//! - les locales ne sont visibles qu'après leur déclaration, dans leur bloc et ses sous-blocs ;
-//! - un élément d'un autre fichier n'est visible qu'après `import` ;
-//! - les événements sont visibles dans tout le projet (voir DECISIONS D19).
+//! Visibilité (cahier des charges 1.2, §7 et §8) — détail dans `docs/grammaire/resolution-des-noms.md` :
+//! blocs locaux → scopes englobants → racine du fichier → imports → fonctions natives.
 //!
-//! Ordre de recherche d'un nom : blocs locaux (du plus proche au plus lointain) →
-//! scopes englobants → racine du fichier → imports → fonctions natives.
+//! Types (§5 et §6) — détail dans `docs/grammaire/types.md` : aucune conversion implicite,
+//! DualType limité à deux types, narrowing par `is` suivi de façon conservatrice.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mcf_diagnostics::{codes, Diagnostic, Span};
 use mcf_syntax::ast::*;
 
-/// Types natifs connus en phase 3 (cahier des charges 1.2, §5 ; `Bytes` vient de §11.1).
+pub mod types;
+pub use types::Ty;
+
+/// Types natifs connus (cahier des charges 1.2, §5 ; `Bytes` vient de §11.1).
 pub const BUILTIN_TYPES: &[&str] = &[
     "Bool", "Int", "Float", "String", "Char", "Byte", "Bytes", "Array", "Map", "DateTime", "Void",
 ];
 
-/// Fonctions natives et leur nombre d'arguments.
+/// Fonctions natives : nom, nombre d'arguments.
 pub const BUILTIN_FUNCTIONS: &[(&str, usize)] = &[("print", 1), ("sleep", 1)];
 
 pub struct Source {
@@ -49,21 +48,27 @@ pub fn check_project(sources: &[Source]) -> Vec<Vec<Diagnostic>> {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Builtin {
+    Print,
+    Sleep,
+}
+
 #[derive(Clone, Debug)]
 enum Sym {
-    Global,
-    Func { params: usize },
+    Global { ty: Ty },
+    Func { params: Vec<Ty>, ret: Ty },
     Scope { table: usize },
-    Builtin { params: usize },
+    Builtin(Builtin),
 }
 
 impl Sym {
     fn describe(&self) -> &'static str {
         match self {
-            Sym::Global => "une variable",
+            Sym::Global { .. } => "une variable",
             Sym::Func { .. } => "une fonction",
             Sym::Scope { .. } => "un scope",
-            Sym::Builtin { .. } => "une fonction native",
+            Sym::Builtin(_) => "une fonction native",
         }
     }
 }
@@ -74,16 +79,44 @@ struct Table {
 }
 
 struct EventInfo {
-    params: usize,
+    params: Vec<Ty>,
 }
 
-/// Résultat de la résolution d'une expression-chemin (`a`, `A.b.c`).
+/// Un bloc local : ses variables et les types actifs connus (narrowing) dans ce bloc.
+#[derive(Default)]
+struct Frame {
+    locals: HashMap<String, (Span, Ty)>,
+    narrow: HashMap<String, Ty>,
+}
+
+/// Ce que désigne une expression, quand c'est un chemin nommé.
+#[derive(Clone)]
 enum Resolved {
     Local,
     Sym(Sym),
-    /// Inconnu ou non résolvable statiquement (ex. membre d'une valeur) : rien à vérifier de plus.
     Opaque,
 }
+
+/// Résultat de la vérification d'une expression.
+struct Typed {
+    res: Resolved,
+    /// Type actif (après narrowing).
+    ty: Ty,
+    /// Type déclaré (pour une affectation, c'est lui qui compte).
+    declared: Ty,
+}
+
+impl Typed {
+    fn value(ty: Ty) -> Self {
+        Typed {
+            res: Resolved::Opaque,
+            declared: ty.clone(),
+            ty,
+        }
+    }
+}
+
+type Narrowings = Vec<(String, Ty)>;
 
 pub fn analyze(modules: &[&Module]) -> Vec<Vec<Diagnostic>> {
     let mut a = Analyzer {
@@ -93,8 +126,9 @@ pub fn analyze(modules: &[&Module]) -> Vec<Vec<Diagnostic>> {
         events: HashMap::new(),
         diags: vec![Vec::new(); modules.len()],
         file: 0,
-        locals: Vec::new(),
+        frames: Vec::new(),
         loop_depth: 0,
+        ret: None,
     };
     for (file, module) in modules.iter().enumerate() {
         a.file = file;
@@ -120,9 +154,10 @@ struct Analyzer {
     events: HashMap<String, EventInfo>,
     diags: Vec<Vec<Diagnostic>>,
     file: usize,
-    /// Pile des blocs locaux de la fonction en cours : nom → position de déclaration.
-    locals: Vec<HashMap<String, Span>>,
+    frames: Vec<Frame>,
     loop_depth: usize,
+    /// Type de retour de la fonction en cours (`None` hors fonction).
+    ret: Option<Ty>,
 }
 
 fn path_text(path: &Path) -> String {
@@ -133,15 +168,40 @@ fn path_text(path: &Path) -> String {
         .join(".")
 }
 
-fn type_text(ty: &TypeRef) -> String {
-    let mut s = path_text(&ty.path);
-    if !ty.args.is_empty() {
-        let args: Vec<_> = ty.args.iter().map(type_text).collect();
-        s.push('<');
-        s.push_str(&args.join(", "));
-        s.push('>');
+fn op_symbol(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Or => "||",
+        BinaryOp::And => "&&",
+        BinaryOp::Eq => "==",
+        BinaryOp::NotEq => "!=",
+        BinaryOp::Lt => "<",
+        BinaryOp::Gt => ">",
+        BinaryOp::Le => "<=",
+        BinaryOp::Ge => ">=",
+        BinaryOp::Add => "+",
+        BinaryOp::Sub => "-",
+        BinaryOp::Mul => "*",
+        BinaryOp::Div => "/",
+        BinaryOp::Rem => "%",
     }
-    s
+}
+
+/// Un bloc se termine-t-il toujours par un `return` ?
+fn always_returns(block: &Block) -> bool {
+    block.stmts.iter().any(|s| match s {
+        Stmt::Return { .. } => true,
+        Stmt::If(i) => if_always_returns(i),
+        _ => false,
+    })
+}
+
+fn if_always_returns(i: &IfStmt) -> bool {
+    always_returns(&i.then_block)
+        && match &i.else_branch {
+            Some(Else::Block(b)) => always_returns(b),
+            Some(Else::If(nested)) => if_always_returns(nested),
+            None => false,
+        }
 }
 
 impl Analyzer {
@@ -157,7 +217,119 @@ impl Analyzer {
         self.tables.len() - 1
     }
 
-    // ------------------------------------------------------------ passe 1 : déclarations
+    // ================================================================ types déclarés
+
+    fn type_ref(&mut self, r: &TypeRef, report: bool) -> Ty {
+        let name = path_text(&r.path);
+        let Some(base) = Ty::from_builtin(&name) else {
+            if report {
+                self.report(
+                    Diagnostic::new(
+                        &codes::UNKNOWN_TYPE,
+                        r.path.span,
+                        format!("type inconnu `{name}`"),
+                    )
+                    .expected(BUILTIN_TYPES.join(", ")),
+                );
+            }
+            return Ty::Unknown;
+        };
+        let expected_args = match base {
+            Ty::Array(_) => &[0usize, 1][..],
+            Ty::Map(..) => &[0, 2][..],
+            _ => &[0][..],
+        };
+        if !expected_args.contains(&r.args.len()) {
+            if report {
+                let expected = expected_args
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ou ");
+                self.report(
+                    Diagnostic::new(
+                        &codes::WRONG_TYPE_ARGUMENTS,
+                        r.span,
+                        format!(
+                            "`{name}` attend {expected} argument(s) de type, {} fourni(s)",
+                            r.args.len()
+                        ),
+                    )
+                    .suggestion("exemples valides : `Array<Int>`, `Map<String, Int>`"),
+                );
+            }
+            return Ty::Unknown;
+        }
+        let mut args: Vec<Ty> = r.args.iter().map(|a| self.type_ref(a, report)).collect();
+        if report {
+            for (arg, ty) in r.args.iter().zip(&args) {
+                if matches!(ty, Ty::Void | Ty::Dual(..)) {
+                    self.report(Diagnostic::new(
+                        &codes::VOID_NOT_ALLOWED,
+                        arg.span,
+                        "`Void` n'est pas autorisé comme argument de type",
+                    ));
+                }
+            }
+        }
+        match base {
+            Ty::Array(_) if args.len() == 1 => Ty::Array(Box::new(args.remove(0))),
+            Ty::Map(..) if args.len() == 2 => {
+                let v = args.remove(1);
+                Ty::Map(Box::new(args.remove(0)), Box::new(v))
+            }
+            other => other,
+        }
+    }
+
+    /// Type d'une déclaration `T` ou `T1, T2`. `Void` n'est accepté que seul et si `allow_void`.
+    fn type_decl(&mut self, decl: &TypeDecl, allow_void: bool, report: bool) -> Ty {
+        let tys: Vec<Ty> = decl
+            .types
+            .iter()
+            .map(|t| self.type_ref(t, report))
+            .collect();
+        if report {
+            for (r, ty) in decl.types.iter().zip(&tys) {
+                if *ty == Ty::Void && !(allow_void && tys.len() == 1) {
+                    self.report(
+                        Diagnostic::new(
+                            &codes::VOID_NOT_ALLOWED,
+                            r.span,
+                            "`Void` n'est pas un type de valeur",
+                        )
+                        .suggestion("`Void` s'utilise seul, comme type de retour d'une fonction"),
+                    );
+                }
+            }
+        }
+        match tys.as_slice() {
+            [single] => single.clone(),
+            [a, b] => {
+                if a.same(b) && !a.is_unknown() {
+                    if report {
+                        self.report(
+                            Diagnostic::new(
+                                &codes::DUPLICATE_DUAL_TYPE,
+                                decl.span,
+                                format!("DualType `{a}, {b}` : les deux types sont identiques"),
+                            )
+                            .suggestion(format!("écrire simplement `{a}`")),
+                        );
+                    }
+                    a.clone()
+                } else if a.is_unknown() || b.is_unknown() {
+                    Ty::Unknown
+                } else {
+                    Ty::Dual(Box::new(a.clone()), Box::new(b.clone()))
+                }
+            }
+            // Plus de deux types : MCF0106 déjà signalé par le parser.
+            _ => Ty::Unknown,
+        }
+    }
+
+    // ================================================================ passe 1 : déclarations
 
     fn declare(&mut self, table: usize, ident: &Ident, sym: Sym) {
         if self.tables[table].names.contains_key(&ident.name) {
@@ -177,27 +349,38 @@ impl Analyzer {
     fn declare_items(&mut self, items: &[Item], table: usize) {
         for item in items {
             match item {
-                Item::Global(v) => self.declare(table, &v.name, Sym::Global),
-                Item::Func(f) => self.declare(
-                    table,
-                    &f.name,
-                    Sym::Func {
-                        params: f.params.len(),
-                    },
-                ),
+                Item::Global(v) => {
+                    let ty = self.type_decl(&v.ty, false, true);
+                    self.declare(table, &v.name, Sym::Global { ty });
+                }
+                Item::Func(f) => {
+                    let params = f
+                        .params
+                        .iter()
+                        .map(|p| self.type_decl(&p.ty, false, true))
+                        .collect();
+                    let ret = match &f.ret {
+                        Some(r) => self.type_decl(r, true, true),
+                        None => Ty::Unknown,
+                    };
+                    self.declare(table, &f.name, Sym::Func { params, ret });
+                }
                 Item::Scope(s) => {
                     let child = self.new_table(Some(table));
                     self.declare(table, &s.name, Sym::Scope { table: child });
                     self.declare_items(&s.items, child);
                 }
                 Item::Event(e) => {
+                    let params = e
+                        .params
+                        .iter()
+                        .map(|p| self.type_decl(&p.ty, false, true))
+                        .collect();
                     let name = path_text(&e.name);
                     if let std::collections::hash_map::Entry::Vacant(slot) =
                         self.events.entry(name.clone())
                     {
-                        slot.insert(EventInfo {
-                            params: e.params.len(),
-                        });
+                        slot.insert(EventInfo { params });
                     } else {
                         self.report(Diagnostic::new(
                             &codes::DUPLICATE_DECLARATION,
@@ -211,7 +394,7 @@ impl Analyzer {
         }
     }
 
-    // ------------------------------------------------------------ passe 2 : imports
+    // ================================================================ passe 2 : imports
 
     /// Cherche `segments` à partir de la racine de chaque autre fichier.
     fn find_exported(&self, segments: &[Ident]) -> Vec<Sym> {
@@ -221,16 +404,12 @@ impl Analyzer {
                 continue;
             }
             let mut table = root;
-            let mut sym = None;
             for (i, seg) in segments.iter().enumerate() {
                 match self.tables[table].names.get(&seg.name) {
                     Some(Sym::Scope { table: t }) if i + 1 < segments.len() => table = *t,
-                    Some(s) if i + 1 == segments.len() => sym = Some(s.clone()),
+                    Some(s) if i + 1 == segments.len() => found.push(s.clone()),
                     _ => break,
                 }
-            }
-            if let Some(s) = sym {
-                found.push(s);
             }
         }
         found
@@ -242,7 +421,7 @@ impl Analyzer {
             let Item::Import(imp) = item else { continue };
             let full = path_text(&imp.path);
             let last = &imp.path.segments[imp.path.segments.len() - 1];
-            let found = self.find_exported(&imp.path.segments);
+            let mut found = self.find_exported(&imp.path.segments);
             match found.len() {
                 0 => self.report(
                     Diagnostic::new(
@@ -268,8 +447,7 @@ impl Analyzer {
                             )),
                         );
                     } else {
-                        let sym = found.into_iter().next().expect("un résultat");
-                        self.imports[self.file].insert(last.name.clone(), sym);
+                        self.imports[self.file].insert(last.name.clone(), found.remove(0));
                     }
                 }
                 n => self.report(
@@ -284,125 +462,147 @@ impl Analyzer {
         }
     }
 
-    // ------------------------------------------------------------ passe 3 : corps
+    // ================================================================ passe 3 : corps
 
     fn check_items(&mut self, items: &[Item], table: usize) {
         for item in items {
             match item {
                 Item::Global(v) => {
-                    self.check_type_decl(&v.ty);
-                    if let Some(init) = &v.init {
-                        self.check_expr(init, table);
+                    if let (Some(init), Some(Sym::Global { ty })) =
+                        (&v.init, self.tables[table].names.get(&v.name.name).cloned())
+                    {
+                        let value = self.check_expr(init, table);
+                        self.expect_assignable(&value.ty, &ty, init.span);
                     }
                 }
                 Item::Func(f) => {
-                    self.locals.push(HashMap::new());
-                    for p in &f.params {
-                        self.check_type_decl(&p.ty);
-                        self.declare_local(&p.name);
+                    let (params, ret) = match self.tables[table].names.get(&f.name.name) {
+                        Some(Sym::Func { params, ret }) => (params.clone(), ret.clone()),
+                        _ => continue, // doublon déjà signalé
+                    };
+                    self.enter_body(ret.clone());
+                    for (p, ty) in f.params.iter().zip(params) {
+                        self.declare_local(&p.name, ty);
                     }
-                    if let Some(ret) = &f.ret {
-                        self.check_type_decl(ret);
+                    self.check_block_in_current_frame(&f.body, table);
+                    if !matches!(ret, Ty::Void | Ty::Unknown) && !always_returns(&f.body) {
+                        let end = Span::new(f.body.span.end.saturating_sub(1), f.body.span.end);
+                        self.report(
+                            Diagnostic::new(
+                                &codes::MISSING_RETURN,
+                                end,
+                                format!(
+                                    "la fonction `{}` doit retourner `{ret}` sur tous les chemins",
+                                    f.name.name
+                                ),
+                            )
+                            .suggestion(
+                                "ajouter un `return` à la fin, ou une branche `else` qui retourne",
+                            ),
+                        );
                     }
-                    self.check_block(&f.body, table, false);
-                    self.locals.pop();
+                    self.leave_body();
                 }
                 Item::Scope(s) => {
-                    let Some(Sym::Scope { table: child }) =
+                    if let Some(Sym::Scope { table: child }) =
                         self.tables[table].names.get(&s.name.name).cloned()
-                    else {
-                        continue; // doublon déjà signalé
-                    };
-                    self.check_items(&s.items, child);
+                    {
+                        self.check_items(&s.items, child);
+                    }
                 }
                 Item::Event(e) => {
-                    self.locals.push(HashMap::new());
+                    self.enter_body(Ty::Void);
                     for p in &e.params {
-                        self.check_type_decl(&p.ty);
-                        self.declare_local(&p.name);
+                        self.declare_local(&p.name, Ty::Unknown);
                     }
-                    self.locals.pop();
+                    self.leave_body();
                 }
                 Item::On(h) => {
-                    self.check_event_use(&h.event, h.bindings.len(), h.event.span, "données");
-                    self.locals.push(HashMap::new());
-                    for b in &h.bindings {
-                        self.declare_local(b);
+                    let params =
+                        self.check_event_use(&h.event, h.bindings.len(), h.event.span, "données");
+                    self.enter_body(Ty::Void);
+                    for (i, b) in h.bindings.iter().enumerate() {
+                        let ty = params.get(i).cloned().unwrap_or(Ty::Unknown);
+                        self.declare_local(b, ty);
                     }
-                    self.check_block(&h.body, table, false);
-                    self.locals.pop();
+                    self.check_block_in_current_frame(&h.body, table);
+                    self.leave_body();
                 }
                 Item::Import(_) => {}
             }
         }
     }
 
-    fn check_event_use(&mut self, path: &Path, count: usize, span: Span, what: &str) {
+    fn enter_body(&mut self, ret: Ty) {
+        self.frames.push(Frame::default());
+        self.ret = Some(ret);
+    }
+
+    fn leave_body(&mut self) {
+        self.frames.pop();
+        self.ret = None;
+    }
+
+    /// Retourne les types des données de l'événement (vide s'il est inconnu).
+    fn check_event_use(&mut self, path: &Path, count: usize, span: Span, what: &str) -> Vec<Ty> {
         let name = path_text(path);
         match self.events.get(&name) {
-            None => self.report(
-                Diagnostic::new(
-                    &codes::UNDECLARED_EVENT,
-                    path.span,
-                    format!("l'événement `{name}` n'est pas déclaré"),
-                )
-                .suggestion(format!("déclarer `event {name}(...);`")),
-            ),
-            Some(info) if info.params != count => {
-                let expected = info.params;
+            None => {
                 self.report(
                     Diagnostic::new(
-                        &codes::EVENT_ARITY_MISMATCH,
-                        span,
-                        format!("l'événement `{name}` transporte {expected} donnée(s), {count} {what} fournie(s)"),
+                        &codes::UNDECLARED_EVENT,
+                        path.span,
+                        format!("l'événement `{name}` n'est pas déclaré"),
                     )
-                    .expected(expected.to_string())
-                    .received(count.to_string()),
+                    .suggestion(format!("déclarer `event {name}(...);`")),
                 );
+                Vec::new()
             }
-            Some(_) => {}
-        }
-    }
-
-    fn check_type_decl(&mut self, decl: &TypeDecl) {
-        for ty in &decl.types {
-            self.check_type(ty);
-        }
-        if let [a, b] = decl.types.as_slice() {
-            let (ta, tb) = (type_text(a), type_text(b));
-            if ta == tb {
-                self.report(
-                    Diagnostic::new(
-                        &codes::DUPLICATE_DUAL_TYPE,
-                        decl.span,
-                        format!("DualType `{ta}, {tb}` : les deux types sont identiques"),
-                    )
-                    .suggestion(format!("écrire simplement `{ta}`")),
-                );
+            Some(info) => {
+                let params = info.params.clone();
+                if params.len() != count {
+                    self.report(
+                        Diagnostic::new(
+                            &codes::EVENT_ARITY_MISMATCH,
+                            span,
+                            format!(
+                                "l'événement `{name}` transporte {} donnée(s), {count} {what} fournie(s)",
+                                params.len()
+                            ),
+                        )
+                        .expected(params.len().to_string())
+                        .received(count.to_string()),
+                    );
+                }
+                params
             }
         }
     }
 
-    fn check_type(&mut self, ty: &TypeRef) {
-        let name = path_text(&ty.path);
-        if !BUILTIN_TYPES.contains(&name.as_str()) {
-            self.report(
-                Diagnostic::new(
-                    &codes::UNKNOWN_TYPE,
-                    ty.path.span,
-                    format!("type inconnu `{name}`"),
-                )
-                .expected(BUILTIN_TYPES.join(", ")),
-            );
+    fn expect_assignable(&mut self, value: &Ty, target: &Ty, span: Span) {
+        if value.assignable_to(target) {
+            return;
         }
-        for arg in &ty.args {
-            self.check_type(arg);
+        let mut d = Diagnostic::new(
+            &codes::TYPE_MISMATCH,
+            span,
+            format!("une valeur `{value}` ne peut pas être rangée dans `{target}`"),
+        )
+        .expected(target.to_string())
+        .received(value.to_string());
+        if value.is_dual() {
+            d = d.suggestion("vérifier d'abord le type actif : `if (valeur is Type) then { ... }`");
+        } else if value.is_numeric() && target.is_numeric() {
+            d = d.suggestion("pas de conversion implicite entre Int et Float : écrire `2.0` plutôt que `2`, par exemple");
         }
+        self.report(d);
     }
 
-    fn declare_local(&mut self, ident: &Ident) {
-        let frame = self.locals.len() - 1;
-        if self.locals[frame].contains_key(&ident.name) {
+    // ---------------------------------------------------------------- locales et narrowing
+
+    fn declare_local(&mut self, ident: &Ident, ty: Ty) {
+        let frame = self.frames.len() - 1;
+        if self.frames[frame].locals.contains_key(&ident.name) {
             self.report(Diagnostic::new(
                 &codes::DUPLICATE_DECLARATION,
                 ident.span,
@@ -410,11 +610,10 @@ impl Analyzer {
             ));
             return;
         }
-        let outer = self.locals[..frame]
+        let shadows = self.frames[..frame]
             .iter()
-            .rev()
-            .find_map(|f| f.get(&ident.name).copied());
-        if outer.is_some() {
+            .any(|f| f.locals.contains_key(&ident.name));
+        if shadows {
             self.report(
                 Diagnostic::new(
                     &codes::SHADOWED_LOCAL,
@@ -427,123 +626,108 @@ impl Analyzer {
                 .suggestion("choisir un autre nom pour éviter toute confusion"),
             );
         }
-        self.locals[frame].insert(ident.name.clone(), ident.span);
+        let f = &mut self.frames[frame];
+        f.narrow.remove(&ident.name);
+        f.locals.insert(ident.name.clone(), (ident.span, ty));
     }
 
-    fn check_block(&mut self, block: &Block, table: usize, new_frame: bool) {
-        if new_frame {
-            self.locals.push(HashMap::new());
+    /// Type actif d'un nom : le narrowing le plus proche, sans traverser sa propre déclaration.
+    fn active_ty(&self, name: &str, declared: &Ty) -> Ty {
+        for f in self.frames.iter().rev() {
+            if let Some(t) = f.narrow.get(name) {
+                return t.clone();
+            }
+            if f.locals.contains_key(name) {
+                break;
+            }
         }
-        for stmt in &block.stmts {
-            self.check_stmt(stmt, table);
-        }
-        if new_frame {
-            self.locals.pop();
+        declared.clone()
+    }
+
+    fn forget_narrowing(&mut self, name: &str) {
+        for f in &mut self.frames {
+            f.narrow.remove(name);
         }
     }
 
-    fn check_loop_body(&mut self, block: &Block, table: usize) {
-        self.loop_depth += 1;
-        self.check_block(block, table, true);
-        self.loop_depth -= 1;
+    /// Un appel de fonction ou un `emit` peut modifier n'importe quelle globale.
+    fn forget_global_narrowings(&mut self) {
+        for f in &mut self.frames {
+            f.narrow.retain(|name, _| name.starts_with('_'));
+        }
     }
 
-    fn check_stmt(&mut self, stmt: &Stmt, table: usize) {
-        match stmt {
-            Stmt::Local(v) => {
-                self.check_type_decl(&v.ty);
-                // L'initialisation est vérifiée avant la déclaration : `_x: Int = _x;` est refusé.
-                if let Some(init) = &v.init {
-                    self.check_expr(init, table);
+    fn with_narrowings<R>(&mut self, n: Narrowings, run: impl FnOnce(&mut Self) -> R) -> R {
+        let mut frame = Frame::default();
+        frame.narrow.extend(n);
+        self.frames.push(frame);
+        let r = run(self);
+        self.frames.pop();
+        r
+    }
+
+    /// Narrowings induits par une condition : (si vraie, si fausse).
+    fn narrowings(&mut self, cond: &Expr, table: usize) -> (Narrowings, Narrowings) {
+        match &cond.kind {
+            ExprKind::Is { expr, ty } => {
+                let ExprKind::Name { ident } = &expr.kind else {
+                    return (vec![], vec![]);
+                };
+                let Some((_, declared)) = self.lookup_typed(&ident.name, table) else {
+                    return (vec![], vec![]);
+                };
+                let current = self.active_ty(&ident.name, &declared);
+                let tested = self.type_ref(ty, false);
+                let members = current.members();
+                if !current.is_dual() || !members.iter().any(|m| m.same(&tested)) {
+                    return (vec![], vec![]);
                 }
-                self.declare_local(&v.name);
+                let other = members
+                    .iter()
+                    .find(|m| !m.same(&tested))
+                    .map(|m| (*m).clone());
+                let then = vec![(ident.name.clone(), tested)];
+                let otherwise = other
+                    .map(|o| vec![(ident.name.clone(), o)])
+                    .unwrap_or_default();
+                (then, otherwise)
             }
-            Stmt::Assign { target, value, .. } => {
-                if let Resolved::Sym(
-                    sym @ (Sym::Func { .. } | Sym::Scope { .. } | Sym::Builtin { .. }),
-                ) = self.check_expr(target, table)
-                {
-                    self.report(Diagnostic::new(
-                        &codes::NOT_ASSIGNABLE,
-                        target.span,
-                        format!("impossible d'affecter une valeur à {}", sym.describe()),
-                    ));
-                }
-                self.check_expr(value, table);
-            }
-            Stmt::If(i) => self.check_if(i, table),
-            Stmt::While { cond, body, .. } => {
-                self.check_expr(cond, table);
-                self.check_loop_body(body, table);
-            }
-            Stmt::For {
-                init,
-                cond,
-                step,
-                body,
-                ..
+            ExprKind::Binary {
+                op: BinaryOp::And,
+                lhs,
+                rhs,
             } => {
-                self.locals.push(HashMap::new());
-                self.check_stmt(&Stmt::Local(init.clone()), table);
-                self.check_expr(cond, table);
-                self.check_stmt(step, table);
-                self.check_loop_body(body, table);
-                self.locals.pop();
+                let (mut t, _) = self.narrowings(lhs, table);
+                let (t2, _) = self.with_narrowings(t.clone(), |a| a.narrowings(rhs, table));
+                t.extend(t2);
+                (t, vec![])
             }
-            Stmt::Foreach {
-                binding,
-                ty,
-                iter,
-                body,
-                ..
+            ExprKind::Binary {
+                op: BinaryOp::Or,
+                lhs,
+                rhs,
             } => {
-                if let Some(ty) = ty {
-                    self.check_type_decl(ty);
-                }
-                self.check_expr(iter, table);
-                self.locals.push(HashMap::new());
-                self.declare_local(binding);
-                self.check_loop_body(body, table);
-                self.locals.pop();
+                let (_, mut f) = self.narrowings(lhs, table);
+                let (_, f2) = self.with_narrowings(f.clone(), |a| a.narrowings(rhs, table));
+                f.extend(f2);
+                (vec![], f)
             }
-            Stmt::Return { value, .. } => {
-                if let Some(v) = value {
-                    self.check_expr(v, table);
-                }
+            ExprKind::Unary {
+                op: UnaryOp::Not,
+                expr,
+            } => {
+                let (t, f) = self.narrowings(expr, table);
+                (f, t)
             }
-            Stmt::Break { span } | Stmt::Continue { span } => {
-                if self.loop_depth == 0 {
-                    self.report(Diagnostic::new(
-                        &codes::LOOP_CONTROL_OUTSIDE_LOOP,
-                        *span,
-                        "`break` / `continue` utilisé hors d'une boucle",
-                    ));
-                }
-            }
-            Stmt::Emit { event, args, span } => {
-                self.check_event_use(event, args.len(), *span, "valeurs");
-                for a in args {
-                    self.check_expr(a, table);
-                }
-            }
-            Stmt::Expr { expr, .. } => {
-                self.check_expr(expr, table);
-            }
+            ExprKind::Paren { expr } => self.narrowings(expr, table),
+            _ => (vec![], vec![]),
         }
     }
 
-    fn check_if(&mut self, i: &IfStmt, table: usize) {
-        self.check_expr(&i.cond, table);
-        self.check_block(&i.then_block, table, true);
-        match &i.else_branch {
-            Some(Else::Block(b)) => self.check_block(b, table, true),
-            Some(Else::If(nested)) => self.check_if(nested, table),
-            None => {}
-        }
-    }
+    // ---------------------------------------------------------------- recherche
 
     fn lookup(&self, name: &str, table: usize) -> Option<Resolved> {
-        if self.locals.iter().rev().any(|f| f.contains_key(name)) {
+        if self.frames.iter().any(|f| f.locals.contains_key(name)) {
             return Some(Resolved::Local);
         }
         let mut t = Some(table);
@@ -556,10 +740,24 @@ impl Analyzer {
         if let Some(sym) = self.imports[self.file].get(name) {
             return Some(Resolved::Sym(sym.clone()));
         }
-        BUILTIN_FUNCTIONS
-            .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, params)| Resolved::Sym(Sym::Builtin { params: *params }))
+        match name {
+            "print" => Some(Resolved::Sym(Sym::Builtin(Builtin::Print))),
+            "sleep" => Some(Resolved::Sym(Sym::Builtin(Builtin::Sleep))),
+            _ => None,
+        }
+    }
+
+    /// Résolution d'un nom avec son type déclaré (variables uniquement).
+    fn lookup_typed(&self, name: &str, table: usize) -> Option<(Resolved, Ty)> {
+        if let Some((_, ty)) = self.frames.iter().rev().find_map(|f| f.locals.get(name)) {
+            return Some((Resolved::Local, ty.clone()));
+        }
+        match self.lookup(name, table)? {
+            Resolved::Sym(Sym::Global { ty }) => {
+                Some((Resolved::Sym(Sym::Global { ty: ty.clone() }), ty))
+            }
+            other => Some((other, Ty::Unknown)),
+        }
     }
 
     fn undeclared(&mut self, ident: &Ident) {
@@ -584,85 +782,637 @@ impl Analyzer {
         self.report(d);
     }
 
-    fn check_expr(&mut self, expr: &Expr, table: usize) -> Resolved {
-        match &expr.kind {
-            ExprKind::Name { ident } => match self.lookup(&ident.name, table) {
-                Some(r) => r,
-                None => {
-                    self.undeclared(ident);
-                    Resolved::Opaque
+    // ---------------------------------------------------------------- instructions
+
+    fn check_block_in_current_frame(&mut self, block: &Block, table: usize) {
+        for stmt in &block.stmts {
+            self.check_stmt(stmt, table);
+        }
+    }
+
+    fn check_block(&mut self, block: &Block, table: usize, narrow: Narrowings) {
+        self.with_narrowings(narrow, |a| a.check_block_in_current_frame(block, table));
+    }
+
+    fn check_condition(&mut self, cond: &Expr, table: usize) {
+        let t = self.check_expr(cond, table);
+        if !t.ty.is_unknown() && t.ty != Ty::Bool {
+            self.report(
+                Diagnostic::new(
+                    &codes::TYPE_MISMATCH,
+                    cond.span,
+                    "une condition doit être un `Bool`",
+                )
+                .expected("Bool")
+                .received(t.ty.to_string()),
+            );
+        }
+    }
+
+    /// Avant une boucle : tout narrowing que le corps pourrait invalider est oublié,
+    /// car à la deuxième itération il ne serait plus vrai.
+    fn prepare_loop(&mut self, parts: &[&Block], extra: &[&Stmt], table: usize) {
+        let mut assigned = HashSet::new();
+        let mut calls = false;
+        for b in parts {
+            self.scan_block(b, table, &mut assigned, &mut calls);
+        }
+        for s in extra {
+            self.scan_stmt(s, table, &mut assigned, &mut calls);
+        }
+        for name in assigned {
+            self.forget_narrowing(&name);
+        }
+        if calls {
+            self.forget_global_narrowings();
+        }
+    }
+
+    fn scan_block(
+        &self,
+        b: &Block,
+        table: usize,
+        assigned: &mut HashSet<String>,
+        calls: &mut bool,
+    ) {
+        for s in &b.stmts {
+            self.scan_stmt(s, table, assigned, calls);
+        }
+    }
+
+    fn scan_stmt(&self, s: &Stmt, table: usize, assigned: &mut HashSet<String>, calls: &mut bool) {
+        let mut exprs: Vec<&Expr> = Vec::new();
+        match s {
+            Stmt::Local(v) => exprs.extend(v.init.iter()),
+            Stmt::Assign { target, value, .. } => {
+                if let ExprKind::Name { ident } = &target.kind {
+                    assigned.insert(ident.name.clone());
                 }
-            },
-            ExprKind::Member { object, field } => match self.check_expr(object, table) {
-                Resolved::Sym(Sym::Scope { table: scope }) => {
-                    match self.tables[scope].names.get(&field.name).cloned() {
-                        Some(sym) => Resolved::Sym(sym),
-                        None => {
-                            self.report(Diagnostic::new(
-                                &codes::UNKNOWN_MEMBER,
-                                field.span,
-                                format!("le scope ne contient pas `{}`", field.name),
-                            ));
-                            Resolved::Opaque
+                exprs.push(target);
+                exprs.push(value);
+            }
+            Stmt::If(i) => {
+                let mut cur = Some(i);
+                while let Some(i) = cur {
+                    exprs.push(&i.cond);
+                    self.scan_block(&i.then_block, table, assigned, calls);
+                    cur = match &i.else_branch {
+                        Some(Else::Block(b)) => {
+                            self.scan_block(b, table, assigned, calls);
+                            None
                         }
-                    }
+                        Some(Else::If(n)) => Some(n),
+                        None => None,
+                    };
                 }
-                // Membre d'une valeur : vérifié avec les types (phase 4).
-                _ => Resolved::Opaque,
-            },
+            }
+            Stmt::While { cond, body, .. } => {
+                exprs.push(cond);
+                self.scan_block(body, table, assigned, calls);
+            }
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+                ..
+            } => {
+                exprs.extend(init.init.iter());
+                exprs.push(cond);
+                self.scan_stmt(step, table, assigned, calls);
+                self.scan_block(body, table, assigned, calls);
+            }
+            Stmt::Foreach { iter, body, .. } => {
+                exprs.push(iter);
+                self.scan_block(body, table, assigned, calls);
+            }
+            Stmt::Return { value, .. } => exprs.extend(value.iter()),
+            Stmt::Emit { args, .. } => {
+                *calls = true;
+                exprs.extend(args.iter());
+            }
+            Stmt::Expr { expr, .. } => exprs.push(expr),
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        }
+        for e in exprs {
+            self.scan_expr(e, table, calls);
+        }
+    }
+
+    fn scan_expr(&self, e: &Expr, table: usize, calls: &mut bool) {
+        match &e.kind {
             ExprKind::Call { callee, args } => {
-                let callee_res = self.check_expr(callee, table);
-                if let Resolved::Sym(Sym::Func { params } | Sym::Builtin { params }) = callee_res {
-                    if params != args.len() {
-                        self.report(
-                            Diagnostic::new(
-                                &codes::ARGUMENT_COUNT_MISMATCH,
-                                expr.span,
-                                format!(
-                                    "{params} argument(s) attendu(s), {} fourni(s)",
-                                    args.len()
-                                ),
-                            )
-                            .expected(params.to_string())
-                            .received(args.len().to_string()),
-                        );
-                    }
+                let builtin = matches!(&callee.kind, ExprKind::Name { ident }
+                    if matches!(self.lookup(&ident.name, table), Some(Resolved::Sym(Sym::Builtin(_)))));
+                if !builtin {
+                    *calls = true;
                 }
+                self.scan_expr(callee, table, calls);
                 for a in args {
-                    self.check_expr(a, table);
+                    self.scan_expr(a, table, calls);
                 }
-                Resolved::Opaque
             }
+            ExprKind::Member { object, .. } => self.scan_expr(object, table, calls),
             ExprKind::Index { object, index } => {
-                self.check_expr(object, table);
-                self.check_expr(index, table);
-                Resolved::Opaque
+                self.scan_expr(object, table, calls);
+                self.scan_expr(index, table, calls);
             }
-            ExprKind::Unary { expr, .. } | ExprKind::Paren { expr } => {
-                self.check_expr(expr, table);
-                Resolved::Opaque
+            ExprKind::Unary { expr, .. } | ExprKind::Paren { expr } | ExprKind::Is { expr, .. } => {
+                self.scan_expr(expr, table, calls)
             }
             ExprKind::Binary { lhs, rhs, .. } => {
-                self.check_expr(lhs, table);
-                self.check_expr(rhs, table);
-                Resolved::Opaque
-            }
-            ExprKind::Is { expr, ty } => {
-                self.check_expr(expr, table);
-                self.check_type(ty);
-                Resolved::Opaque
+                self.scan_expr(lhs, table, calls);
+                self.scan_expr(rhs, table, calls);
             }
             ExprKind::Array { items } => {
                 for i in items {
-                    self.check_expr(i, table);
+                    self.scan_expr(i, table, calls);
                 }
-                Resolved::Opaque
             }
-            ExprKind::Int { .. }
-            | ExprKind::Float { .. }
-            | ExprKind::Str { .. }
-            | ExprKind::Bool { .. }
-            | ExprKind::Error => Resolved::Opaque,
+            _ => {}
+        }
+    }
+
+    fn loop_body(&mut self, body: &Block, table: usize) {
+        self.loop_depth += 1;
+        self.check_block(body, table, vec![]);
+        self.loop_depth -= 1;
+    }
+
+    fn check_stmt(&mut self, stmt: &Stmt, table: usize) {
+        match stmt {
+            Stmt::Local(v) => {
+                let ty = self.type_decl(&v.ty, false, true);
+                // L'initialisation est vérifiée avant la déclaration : `_x: Int = _x;` est refusé.
+                let init_ty = v.init.as_ref().map(|init| {
+                    let value = self.check_expr(init, table);
+                    self.expect_assignable(&value.ty, &ty, init.span);
+                    value.ty
+                });
+                self.declare_local(&v.name, ty.clone());
+                // Une locale DualType initialisée a un type actif connu.
+                if let Some(t) = init_ty {
+                    if ty.is_dual() && !t.is_dual() && t.assignable_to(&ty) {
+                        if let Some(f) = self.frames.last_mut() {
+                            f.narrow.insert(v.name.name.clone(), t);
+                        }
+                    }
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                let t = self.check_expr(target, table);
+                if let Resolved::Sym(
+                    sym @ (Sym::Func { .. } | Sym::Scope { .. } | Sym::Builtin(_)),
+                ) = &t.res
+                {
+                    self.report(Diagnostic::new(
+                        &codes::NOT_ASSIGNABLE,
+                        target.span,
+                        format!("impossible d'affecter une valeur à {}", sym.describe()),
+                    ));
+                    self.check_expr(value, table);
+                    return;
+                }
+                let v = self.check_expr(value, table);
+                self.expect_assignable(&v.ty, &t.declared, value.span);
+                // Après `x = valeur`, le type actif de x est celui de la valeur.
+                if let ExprKind::Name { ident } = &target.kind {
+                    self.forget_narrowing(&ident.name);
+                    if t.declared.is_dual() && !v.ty.is_dual() && v.ty.assignable_to(&t.declared) {
+                        if let Some(f) = self.frames.last_mut() {
+                            f.narrow.insert(ident.name.clone(), v.ty.clone());
+                        }
+                    }
+                }
+            }
+            Stmt::If(i) => self.check_if(i, table),
+            Stmt::While { cond, body, .. } => {
+                self.prepare_loop(&[body], &[], table);
+                self.check_condition(cond, table);
+                self.loop_body(body, table);
+            }
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+                ..
+            } => {
+                self.frames.push(Frame::default());
+                self.check_stmt(&Stmt::Local(init.clone()), table);
+                self.prepare_loop(&[body], &[step], table);
+                self.check_condition(cond, table);
+                self.check_stmt(step, table);
+                self.loop_body(body, table);
+                self.frames.pop();
+            }
+            Stmt::Foreach {
+                binding,
+                ty,
+                iter,
+                body,
+                ..
+            } => {
+                let it = self.check_expr(iter, table);
+                let element = match &it.ty {
+                    Ty::Array(e) => (**e).clone(),
+                    Ty::Unknown | Ty::Map(..) => Ty::Unknown,
+                    other => {
+                        self.report(
+                            Diagnostic::new(
+                                &codes::TYPE_MISMATCH,
+                                iter.span,
+                                "`foreach` parcourt un tableau",
+                            )
+                            .expected("Array")
+                            .received(other.to_string()),
+                        );
+                        Ty::Unknown
+                    }
+                };
+                let binding_ty = match ty {
+                    Some(decl) => {
+                        let declared = self.type_decl(decl, false, true);
+                        self.expect_assignable(&element, &declared, binding.span);
+                        declared
+                    }
+                    None => element,
+                };
+                self.prepare_loop(&[body], &[], table);
+                self.frames.push(Frame::default());
+                self.declare_local(binding, binding_ty);
+                self.loop_body(body, table);
+                self.frames.pop();
+            }
+            Stmt::Return { value, span } => self.check_return(value.as_ref(), *span, table),
+            Stmt::Break { span } | Stmt::Continue { span } => {
+                if self.loop_depth == 0 {
+                    self.report(Diagnostic::new(
+                        &codes::LOOP_CONTROL_OUTSIDE_LOOP,
+                        *span,
+                        "`break` / `continue` utilisé hors d'une boucle",
+                    ));
+                }
+            }
+            Stmt::Emit { event, args, span } => {
+                let params = self.check_event_use(event, args.len(), *span, "valeurs");
+                for (i, a) in args.iter().enumerate() {
+                    let t = self.check_expr(a, table);
+                    if let Some(p) = params.get(i) {
+                        self.expect_assignable(&t.ty, p, a.span);
+                    }
+                }
+                self.forget_global_narrowings();
+            }
+            Stmt::Expr { expr, .. } => {
+                self.check_expr(expr, table);
+            }
+        }
+    }
+
+    fn check_return(&mut self, value: Option<&Expr>, span: Span, table: usize) {
+        let ret = self.ret.clone().unwrap_or(Ty::Unknown);
+        match value {
+            Some(v) => {
+                let t = self.check_expr(v, table);
+                if ret == Ty::Void {
+                    self.report(
+                        Diagnostic::new(
+                            &codes::UNEXPECTED_RETURN_VALUE,
+                            v.span,
+                            "cette fonction est `Void` : elle ne retourne pas de valeur",
+                        )
+                        .suggestion("écrire `return;` ou changer le type de retour"),
+                    );
+                } else {
+                    self.expect_assignable(&t.ty, &ret, v.span);
+                }
+            }
+            None if !matches!(ret, Ty::Void | Ty::Unknown) => self.report(
+                Diagnostic::new(
+                    &codes::MISSING_RETURN_VALUE,
+                    span,
+                    format!("une valeur `{ret}` doit être retournée"),
+                )
+                .expected(ret.to_string()),
+            ),
+            None => {}
+        }
+    }
+
+    fn check_if(&mut self, i: &IfStmt, table: usize) {
+        self.check_condition(&i.cond, table);
+        let (then_n, else_n) = self.narrowings(&i.cond, table);
+        self.check_block(&i.then_block, table, then_n);
+        match &i.else_branch {
+            Some(Else::Block(b)) => self.check_block(b, table, else_n),
+            Some(Else::If(nested)) => self.with_narrowings(else_n, |a| a.check_if(nested, table)),
+            None => {}
+        }
+    }
+
+    // ---------------------------------------------------------------- expressions
+
+    fn check_expr(&mut self, expr: &Expr, table: usize) -> Typed {
+        match &expr.kind {
+            ExprKind::Int { text } => {
+                if text.parse::<i64>().is_err() {
+                    self.report(Diagnostic::new(
+                        &codes::INTEGER_OVERFLOW,
+                        expr.span,
+                        format!(
+                            "`{text}` dépasse la valeur maximale de `Int` ({})",
+                            i64::MAX
+                        ),
+                    ));
+                }
+                Typed::value(Ty::Int)
+            }
+            ExprKind::Float { .. } => Typed::value(Ty::Float),
+            ExprKind::Str { .. } => Typed::value(Ty::String),
+            ExprKind::Bool { .. } => Typed::value(Ty::Bool),
+            ExprKind::Error => Typed::value(Ty::Unknown),
+            ExprKind::Name { ident } => match self.lookup_typed(&ident.name, table) {
+                Some((res, declared)) => {
+                    let ty = match res {
+                        Resolved::Local | Resolved::Sym(Sym::Global { .. }) => {
+                            self.active_ty(&ident.name, &declared)
+                        }
+                        _ => Ty::Unknown,
+                    };
+                    Typed { res, ty, declared }
+                }
+                None => {
+                    self.undeclared(ident);
+                    Typed::value(Ty::Unknown)
+                }
+            },
+            ExprKind::Member { object, field } => {
+                let obj = self.check_expr(object, table);
+                match obj.res {
+                    Resolved::Sym(Sym::Scope { table: scope }) => {
+                        match self.tables[scope].names.get(&field.name).cloned() {
+                            Some(sym) => {
+                                let declared = match &sym {
+                                    Sym::Global { ty } => ty.clone(),
+                                    _ => Ty::Unknown,
+                                };
+                                Typed {
+                                    res: Resolved::Sym(sym),
+                                    ty: declared.clone(),
+                                    declared,
+                                }
+                            }
+                            None => {
+                                self.report(Diagnostic::new(
+                                    &codes::UNKNOWN_MEMBER,
+                                    field.span,
+                                    format!("le scope ne contient pas `{}`", field.name),
+                                ));
+                                Typed::value(Ty::Unknown)
+                            }
+                        }
+                    }
+                    // Membre d'une valeur : vérifié avec les structures (phase 5).
+                    _ => Typed::value(Ty::Unknown),
+                }
+            }
+            ExprKind::Call { callee, args } => self.check_call(expr, callee, args, table),
+            ExprKind::Index { object, index } => {
+                let obj = self.check_expr(object, table);
+                let idx = self.check_expr(index, table);
+                let ty = match &obj.ty {
+                    Ty::Array(e) => {
+                        self.expect_assignable(&idx.ty, &Ty::Int, index.span);
+                        (**e).clone()
+                    }
+                    Ty::Map(k, v) => {
+                        self.expect_assignable(&idx.ty, k, index.span);
+                        (**v).clone()
+                    }
+                    Ty::Unknown => Ty::Unknown,
+                    other => {
+                        self.not_narrowed_or_invalid(other, object.span, "[]");
+                        Ty::Unknown
+                    }
+                };
+                Typed {
+                    res: Resolved::Opaque,
+                    declared: ty.clone(),
+                    ty,
+                }
+            }
+            ExprKind::Paren { expr } => {
+                let inner = self.check_expr(expr, table);
+                Typed::value(inner.ty)
+            }
+            ExprKind::Unary { op, expr: inner } => {
+                let t = self.check_expr(inner, table).ty;
+                let ty = match (op, &t) {
+                    (_, Ty::Unknown) => Ty::Unknown,
+                    (UnaryOp::Not, Ty::Bool) => Ty::Bool,
+                    (UnaryOp::Neg, Ty::Int | Ty::Float) => t.clone(),
+                    (op, other) => {
+                        let sym = if *op == UnaryOp::Not { "!" } else { "-" };
+                        self.not_narrowed_or_invalid(other, inner.span, sym);
+                        Ty::Unknown
+                    }
+                };
+                Typed::value(ty)
+            }
+            ExprKind::Binary { op, lhs, rhs } => {
+                let l = self.check_expr(lhs, table).ty;
+                // `a && b` : b est évalué seulement si a est vrai, il profite donc du narrowing de a.
+                let r = match op {
+                    BinaryOp::And => {
+                        let (n, _) = self.narrowings(lhs, table);
+                        self.with_narrowings(n, |a| a.check_expr(rhs, table).ty)
+                    }
+                    BinaryOp::Or => {
+                        let (_, n) = self.narrowings(lhs, table);
+                        self.with_narrowings(n, |a| a.check_expr(rhs, table).ty)
+                    }
+                    _ => self.check_expr(rhs, table).ty,
+                };
+                Typed::value(self.binary_ty(*op, &l, &r, lhs.span, rhs.span, expr.span))
+            }
+            ExprKind::Is { expr: inner, ty } => {
+                let t = self.check_expr(inner, table).ty;
+                let tested = self.type_ref(ty, true);
+                if !t.is_unknown() && !tested.is_unknown() {
+                    let possible = t.members().iter().any(|m| m.same(&tested));
+                    if !possible {
+                        self.report(
+                            Diagnostic::new(
+                                &codes::IMPOSSIBLE_TYPE_TEST,
+                                ty.span,
+                                format!("une valeur `{t}` ne peut jamais être `{tested}`"),
+                            )
+                            .expected(t.to_string()),
+                        );
+                    } else if !t.is_dual() {
+                        self.report(Diagnostic::new(
+                            &codes::TYPE_TEST_ALWAYS_TRUE,
+                            expr.span,
+                            format!("le type actif est déjà `{t}` : ce test est toujours vrai"),
+                        ));
+                    }
+                }
+                Typed::value(Ty::Bool)
+            }
+            ExprKind::Array { items } => {
+                let mut element = Ty::Unknown;
+                for item in items {
+                    let t = self.check_expr(item, table).ty;
+                    if element.is_unknown() {
+                        element = t;
+                    } else if !t.same(&element) {
+                        self.report(
+                            Diagnostic::new(
+                                &codes::TYPE_MISMATCH,
+                                item.span,
+                                "tous les éléments d'un tableau doivent avoir le même type",
+                            )
+                            .expected(element.to_string())
+                            .received(t.to_string()),
+                        );
+                    }
+                }
+                Typed::value(Ty::Array(Box::new(element)))
+            }
+        }
+    }
+
+    fn check_call(&mut self, expr: &Expr, callee: &Expr, args: &[Expr], table: usize) -> Typed {
+        let c = self.check_expr(callee, table);
+        let arg_tys: Vec<(Ty, Span)> = args
+            .iter()
+            .map(|a| (self.check_expr(a, table).ty, a.span))
+            .collect();
+        let count_error = |a: &mut Self, expected: usize| {
+            if expected != args.len() {
+                a.report(
+                    Diagnostic::new(
+                        &codes::ARGUMENT_COUNT_MISMATCH,
+                        expr.span,
+                        format!(
+                            "{expected} argument(s) attendu(s), {} fourni(s)",
+                            args.len()
+                        ),
+                    )
+                    .expected(expected.to_string())
+                    .received(args.len().to_string()),
+                );
+            }
+        };
+        let ret = match c.res {
+            Resolved::Sym(Sym::Func { params, ret }) => {
+                count_error(self, params.len());
+                for ((t, span), p) in arg_tys.iter().zip(&params) {
+                    self.expect_assignable(t, p, *span);
+                }
+                // La fonction appelée peut modifier des globales.
+                self.forget_global_narrowings();
+                ret
+            }
+            Resolved::Sym(Sym::Builtin(b)) => {
+                count_error(self, 1);
+                if let Some((t, span)) = arg_tys.first() {
+                    match b {
+                        Builtin::Print if *t == Ty::Void => self.report(
+                            Diagnostic::new(
+                                &codes::TYPE_MISMATCH,
+                                *span,
+                                "`print` attend une valeur, pas `Void`",
+                            )
+                            .received("Void"),
+                        ),
+                        Builtin::Sleep => self.expect_assignable(t, &Ty::Int, *span),
+                        _ => {}
+                    }
+                }
+                Ty::Void
+            }
+            Resolved::Opaque if c.ty.is_unknown() => Ty::Unknown,
+            _ => {
+                self.report(Diagnostic::new(
+                    &codes::NOT_CALLABLE,
+                    callee.span,
+                    "cette expression n'est pas une fonction",
+                ));
+                Ty::Unknown
+            }
+        };
+        Typed::value(ret)
+    }
+
+    fn not_narrowed_or_invalid(&mut self, ty: &Ty, span: Span, op: &str) {
+        if ty.is_dual() {
+            self.report(
+                Diagnostic::new(
+                    &codes::DUAL_TYPE_NOT_NARROWED,
+                    span,
+                    format!("valeur `{ty}` utilisée avec `{op}` sans connaître son type actif"),
+                )
+                .suggestion("vérifier d'abord le type : `if (valeur is Int) then { ... }`"),
+            );
+        } else {
+            self.report(Diagnostic::new(
+                &codes::INVALID_OPERANDS,
+                span,
+                format!("`{op}` ne s'applique pas à une valeur `{ty}`"),
+            ));
+        }
+    }
+
+    fn binary_ty(&mut self, op: BinaryOp, l: &Ty, r: &Ty, ls: Span, rs: Span, whole: Span) -> Ty {
+        use BinaryOp::*;
+        let result_if_unknown = match op {
+            Or | And | Eq | NotEq | Lt | Gt | Le | Ge => Ty::Bool,
+            _ => Ty::Unknown,
+        };
+        for (t, span) in [(l, ls), (r, rs)] {
+            if t.is_dual() {
+                self.not_narrowed_or_invalid(t, span, op_symbol(op));
+                return result_if_unknown;
+            }
+        }
+        if l.is_unknown() || r.is_unknown() {
+            return result_if_unknown;
+        }
+        let numeric = |a: &Ty, b: &Ty| -> Option<Ty> {
+            match (a, b) {
+                (Ty::Int, Ty::Int) => Some(Ty::Int),
+                // Seule promotion admise : Int avec Float dans un calcul donne Float (DECISIONS D23).
+                (Ty::Int | Ty::Float, Ty::Int | Ty::Float) => Some(Ty::Float),
+                _ => None,
+            }
+        };
+        let concat_part =
+            |t: &Ty| matches!(t, Ty::String | Ty::Int | Ty::Float | Ty::Bool | Ty::Char);
+        let ty = match op {
+            Or | And => (l == &Ty::Bool && r == &Ty::Bool).then_some(Ty::Bool),
+            Eq | NotEq => (l.same(r) || numeric(l, r).is_some()).then_some(Ty::Bool),
+            Lt | Gt | Le | Ge => numeric(l, r).map(|_| Ty::Bool),
+            // Concaténation : une chaîne avec une valeur simple donne une chaîne (DECISIONS D22).
+            Add if (l == &Ty::String && concat_part(r)) || (r == &Ty::String && concat_part(l)) => {
+                Some(Ty::String)
+            }
+            Add | Sub | Mul | Div | Rem => numeric(l, r),
+        };
+        match ty {
+            Some(t) => t,
+            None => {
+                self.report(
+                    Diagnostic::new(
+                        &codes::INVALID_OPERANDS,
+                        whole,
+                        format!("`{}` impossible entre `{l}` et `{r}`", op_symbol(op)),
+                    )
+                    .received(format!("{l} {} {r}", op_symbol(op))),
+                );
+                result_if_unknown
+            }
         }
     }
 }
