@@ -1,0 +1,6 @@
+// attendu: MCF0118
+func f(_a: Bool): Void {
+    while (_a) {
+        print(_a);
+    }
+}

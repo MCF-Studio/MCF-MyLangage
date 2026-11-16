@@ -1,0 +1,4 @@
+// attendu: MCF0001
+func f(_a: Bool, _b: Bool): Bool {
+    return _a & _b;
+}

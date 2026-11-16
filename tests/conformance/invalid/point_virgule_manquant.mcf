@@ -1,0 +1,3 @@
+// attendu: MCF0101
+name: String = "MCF"
+level: Int = 1;

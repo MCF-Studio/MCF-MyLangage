@@ -1,0 +1,2 @@
+// attendu: MCF0106
+value: Bool, Int, String = true;

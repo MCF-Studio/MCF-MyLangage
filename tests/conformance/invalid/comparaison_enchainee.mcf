@@ -1,0 +1,4 @@
+// attendu: MCF0113
+func f(_a: Int): Bool {
+    return 0 < _a < 10;
+}

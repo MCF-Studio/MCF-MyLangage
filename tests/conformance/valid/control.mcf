@@ -1,0 +1,44 @@
+// Fonctions, conditions, boucles, narrowing (§6.1, §9, §10)
+players: Array = ["Alex", "Max", "Tom"];
+
+func calculateScore(_points: Int, _multiplier: Float): Float {
+    _result: Float = _points * _multiplier;
+    return _result;
+}
+
+func run(_state: Bool, Int): Void {
+    _counter: Int = 0;
+
+    while (_counter < 10) do {
+        _counter = _counter + 1;
+        if (_counter == 5) then {
+            continue;
+        }
+    }
+
+    for (_i: Int = 0; _i < 10; _i = _i + 1) do {
+        if (_i >= 8 && !(_i == 9)) then {
+            break;
+        }
+        else if (_i % 2 == 0) then {
+            print(_i);
+        }
+        else {
+            print(-_i);
+        }
+    }
+
+    foreach (_player in players) do {
+        print(_player);
+    }
+
+    if (_state is Int) then {
+        print(_state + 10);
+    }
+    else {
+        print(_state);
+    }
+
+    players[0] = "Zoé";
+    Vehicle.Engine.power = calculateScore(100, 1.5) * 2 + 1;
+}

@@ -1,0 +1,7 @@
+// attendu: MCF0104, MCF0101, MCF0117
+func f(_a: Bool): Void {
+    total: Int = 0;
+    print(total)
+    if (_a) {
+    }
+}

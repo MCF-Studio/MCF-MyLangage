@@ -1,0 +1,4 @@
+// attendu: MCF0114
+func f(): Void {
+    1 + 2 = 3;
+}

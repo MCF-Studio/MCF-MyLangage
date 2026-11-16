@@ -1,0 +1,12 @@
+// Événements (§11)
+event PlayerConnected(_playerId: Int);
+event User.Connected(_userId: Int, _username: String);
+
+on PlayerConnected(_playerId) {
+    print("Joueur connecté : " + _playerId);
+}
+
+func connect(): Void {
+    emit PlayerConnected(42);
+    emit User.Connected(1, "Alex");
+}

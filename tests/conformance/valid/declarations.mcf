@@ -1,0 +1,22 @@
+// Déclarations globales, DualType, scopes (cahier des charges 1.2, §4, §6, §7)
+import Player;
+import Player.name;
+
+playerName: String = "Alex";
+playerLevel: Int = 10;
+isConnected: Bool = true;
+playerState: Bool, Int = true;
+scores: Map<String, Int>;
+
+scope Vehicle {
+    name: String = "Comet";
+    speed: Float = 180.0;
+
+    scope Engine {
+        power: Int = 300;
+    }
+
+    func getName(): String {
+        return name;
+    }
+}
