@@ -1,0 +1,16 @@
+[package]
+name = "mcf-config"
+description = "Fichiers de configuration MCF (`.cfg`) : lecture JSON avec commentaires et validation par les types MCF"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+mcf-diagnostics.workspace = true
+
+[lints]
+workspace = true

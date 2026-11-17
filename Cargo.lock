@@ -20,6 +20,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcf-config"
+version = "0.1.0"
+dependencies = [
+ "mcf-diagnostics",
+]
+
+[[package]]
 name = "mcf-diagnostics"
 version = "0.1.0"
 dependencies = [
@@ -31,6 +38,7 @@ dependencies = [
 name = "mcf-runtime"
 version = "0.1.0"
 dependencies = [
+ "mcf-config",
  "mcf-diagnostics",
  "mcf-semantic",
  "mcf-syntax",
@@ -40,6 +48,7 @@ dependencies = [
 name = "mcf-semantic"
 version = "0.1.0"
 dependencies = [
+ "mcf-config",
  "mcf-diagnostics",
  "mcf-syntax",
 ]

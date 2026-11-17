@@ -1,0 +1,9 @@
+// erreur: MCF0413
+struct Server { port: Int; }
+
+func main(): Void {
+    print("avant");
+    _name: String = "server";
+    _s: Server = loadConfig(_name + ".cfg");
+    print("après");
+}

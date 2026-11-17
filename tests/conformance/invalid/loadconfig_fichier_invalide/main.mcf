@@ -1,0 +1,4 @@
+struct Server { port: Int; }
+func main(): Void {
+    _s: Server = loadConfig("server.cfg");
+}

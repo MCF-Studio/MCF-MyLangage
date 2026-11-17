@@ -1,0 +1,5 @@
+import theme;
+
+func main(): Void {
+    print(theme.color);
+}

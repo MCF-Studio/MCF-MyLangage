@@ -53,16 +53,36 @@ pub enum Value {
 /// Une seule tâche s'exécute à la fois et aucun emprunt n'est gardé pendant l'exécution de code
 /// MCF : un emprunt déjà pris est donc forcément un emprunt imbriqué, un bug de l'interpréteur.
 /// Il provoque une panique explicite, jamais un blocage silencieux.
+///
+/// Un contenu `frozen` vient d'une déclaration `config` : il se lit seulement, chaque
+/// modification est refusée à l'exécution (MCF0414). `duplicate` en fait une copie modifiable.
 #[derive(Debug)]
-pub struct ValueCell<T>(Mutex<T>);
+pub struct ValueCell<T> {
+    value: Mutex<T>,
+    frozen: bool,
+}
 
 impl<T> ValueCell<T> {
     pub fn new(value: T) -> Self {
-        ValueCell(Mutex::new(value))
+        ValueCell {
+            value: Mutex::new(value),
+            frozen: false,
+        }
+    }
+
+    pub fn new_frozen(value: T) -> Self {
+        ValueCell {
+            value: Mutex::new(value),
+            frozen: true,
+        }
+    }
+
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
     }
 
     pub fn borrow(&self) -> MutexGuard<'_, T> {
-        match self.0.try_lock() {
+        match self.value.try_lock() {
             Ok(guard) => guard,
             // Une panique a déjà interrompu l'exécution : on laisse l'arrêt se poursuivre.
             Err(TryLockError::Poisoned(p)) => p.into_inner(),

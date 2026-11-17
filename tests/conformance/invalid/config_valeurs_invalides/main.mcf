@@ -1,0 +1,9 @@
+enum Mode { Debug, Release }
+struct Server {
+    port: Int;
+    name: String;
+    mode: Mode;
+    ratio: Float;
+    hosts: Array<String>;
+}
+config server: Server = "server.cfg";

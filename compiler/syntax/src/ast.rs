@@ -15,6 +15,7 @@ pub enum Item {
     Func(FuncDecl),
     Scope(ScopeDecl),
     Import(ImportDecl),
+    Config(ConfigDecl),
     Event(EventDecl),
     On(OnHandler),
     Struct(StructDecl),
@@ -134,6 +135,18 @@ impl ImportDecl {
             .as_ref()
             .unwrap_or_else(|| &self.path.segments[self.path.segments.len() - 1])
     }
+}
+
+/// `config server: ServerConfig = "server.cfg";` : globale en lecture seule, lue dans un fichier
+/// `.cfg` (JSON) et validée par le type déclaré (`docs/grammaire/configuration.md`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ConfigDecl {
+    pub name: Ident,
+    pub ty: TypeDecl,
+    /// Chemin relatif au fichier `.mcf` qui contient la déclaration.
+    pub path: String,
+    pub path_span: Span,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

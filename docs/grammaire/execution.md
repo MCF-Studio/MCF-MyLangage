@@ -189,6 +189,8 @@ erreur[MCF0403] INDEX_OUT_OF_BOUNDS: index 2 hors du tableau (2 élément(s))
   dans `main`
 ```
 
+Fichiers `.cfg` illisibles ou non conformes (MCF0413), modification d'une configuration (MCF0414) : voir [configuration](configuration.md#exécution-d51).
+
 `mcf describe errors` liste les codes MCF04xx. MCF0499 signale un bug de l'interpréteur sur un programme pourtant vérifié : à signaler.
 
 ## Tests

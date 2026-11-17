@@ -12,6 +12,7 @@ repository.workspace = true
 [dependencies]
 mcf-diagnostics.workspace = true
 mcf-syntax.workspace = true
+mcf-config.workspace = true
 
 [lints]
 workspace = true

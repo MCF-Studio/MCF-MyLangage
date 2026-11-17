@@ -18,6 +18,8 @@ pub enum TokenKind {
     Struct,
     Enum,
     Import,
+    /// `config nom: Type = "fichier.cfg";` (phase 9).
+    Config,
     As,
     Event,
     On,
@@ -99,6 +101,7 @@ impl TokenKind {
             Event => "event",
             On => "on",
             Emit => "emit",
+            Config => "config",
             If => "if",
             Then => "then",
             Else => "else",
@@ -153,6 +156,7 @@ pub const KEYWORDS: &[(&str, TokenKind)] = &[
     ("enum", TokenKind::Enum),
     ("scope", TokenKind::Scope),
     ("import", TokenKind::Import),
+    ("config", TokenKind::Config),
     ("as", TokenKind::As),
     ("event", TokenKind::Event),
     ("on", TokenKind::On),
@@ -182,7 +186,6 @@ pub const KEYWORDS: &[(&str, TokenKind)] = &[
 pub const RESERVED: &[&str] = &[
     "action",
     "async",
-    "config",
     "const",
     "interface",
     "let",

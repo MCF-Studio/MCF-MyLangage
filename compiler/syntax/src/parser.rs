@@ -229,6 +229,7 @@ impl Parser<'_> {
             K::Func => self.func().map(Item::Func),
             K::Scope => self.scope().map(Item::Scope),
             K::Import => self.import().map(Item::Import),
+            K::Config => self.config_decl().map(Item::Config),
             K::Event => self.event().map(Item::Event),
             K::On => self.on_handler().map(Item::On),
             K::Struct => self.struct_decl().map(Item::Struct),
@@ -272,7 +273,7 @@ impl Parser<'_> {
             _ => {
                 self.unexpected(
                     &codes::UNEXPECTED_TOKEN,
-                    "une déclaration (func, scope, import, event, on ou `nom: Type`)",
+                    "une déclaration (func, scope, import, config, event, on ou `nom: Type`)",
                 );
                 None
             }
@@ -484,6 +485,32 @@ impl Parser<'_> {
             span: start.to(end),
             path,
             alias,
+        })
+    }
+
+    /// `config nom: Type = "chemin.cfg";` : le chemin est toujours une chaîne littérale, pour
+    /// que le compilateur puisse lire et vérifier le fichier.
+    fn config_decl(&mut self) -> Option<ConfigDecl> {
+        let start = self.bump().span;
+        let name = self.global_ident()?;
+        self.expect(K::Colon).then_some(())?;
+        let ty = self.type_decl()?;
+        self.expect(K::Assign).then_some(())?;
+        let K::Str(path) = self.peek().clone() else {
+            self.unexpected(
+                &codes::UNEXPECTED_TOKEN,
+                "le chemin du fichier en chaîne littérale (`\"nom.cfg\"`)",
+            );
+            return None;
+        };
+        let path_span = self.bump().span;
+        self.expect_semi();
+        Some(ConfigDecl {
+            span: start.to(path_span),
+            name,
+            ty,
+            path,
+            path_span,
         })
     }
 
@@ -820,7 +847,7 @@ impl Parser<'_> {
                 self.expect_semi();
                 Some(stmt)
             }
-            K::Func | K::Scope | K::Import | K::Event | K::On | K::Struct | K::Enum => {
+            K::Func | K::Scope | K::Import | K::Config | K::Event | K::On | K::Struct | K::Enum => {
                 let span = self.span();
                 let kw = self.peek().symbol();
                 self.diags.push(

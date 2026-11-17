@@ -9,10 +9,13 @@
 //!
 //! Passes : 1) déclaration des noms ; 2) imports ; 3) signatures (types des globales, fonctions,
 //! champs, événements — un type peut venir d'un autre fichier) ; 4) structures récursives ;
-//! 5) point d'entrée `func main(): Void` ; 6) corps.
+//! 5) point d'entrée `func main(): Void` ; 6) corps ; 7) fichiers `.cfg` (phase 9).
 
 use std::collections::{HashMap, HashSet};
 
+use std::sync::Arc;
+
+use mcf_config::{Schema, SchemaRef};
 use mcf_diagnostics::{codes, Diagnostic, Span};
 use mcf_syntax::ast::*;
 
@@ -30,25 +33,111 @@ pub struct Source {
     pub text: String,
 }
 
-/// Analyse complète d'un projet : syntaxe puis sémantique.
+impl Source {
+    /// Fichier de configuration (`.cfg`, JSON) plutôt que code MCF.
+    pub fn is_config(&self) -> bool {
+        is_config_file(&self.name)
+    }
+}
+
+pub fn is_config_file(name: &str) -> bool {
+    name.ends_with(".cfg")
+}
+
+/// Analyse complète d'un projet : syntaxe puis sémantique des fichiers `.mcf`, puis lecture et
+/// validation des fichiers `.cfg` par les types qui les utilisent (`config`, `loadConfig`).
 /// Retourne les diagnostics de chaque fichier, dans l'ordre des sources, triés par position.
 pub fn check_project(sources: &[Source]) -> Vec<Vec<Diagnostic>> {
-    let parsed: Vec<_> = sources.iter().map(|s| mcf_syntax::parse(&s.text)).collect();
+    let mcf: Vec<usize> = (0..sources.len())
+        .filter(|&i| !sources[i].is_config())
+        .collect();
+    let parsed: Vec<_> = mcf
+        .iter()
+        .map(|&i| mcf_syntax::parse(&sources[i].text))
+        .collect();
     let modules: Vec<&Module> = parsed.iter().map(|p| &p.module).collect();
-    let mut semantic = analyze(&modules);
-    parsed
-        .into_iter()
-        .zip(semantic.iter_mut())
-        .map(|(p, sem)| {
-            let mut diags = p.diagnostics;
-            // Un fichier syntaxiquement invalide produirait des erreurs sémantiques en cascade.
-            if !diags.iter().any(|d| d.is_error()) {
-                diags.append(sem);
+    let (mut semantic, uses) = analyze_with_configs(&modules);
+    let mut out: Vec<Vec<Diagnostic>> = vec![Vec::new(); sources.len()];
+    for ((p, sem), &i) in parsed.into_iter().zip(semantic.iter_mut()).zip(&mcf) {
+        let mut diags = p.diagnostics;
+        // Un fichier syntaxiquement invalide produirait des erreurs sémantiques en cascade.
+        if !diags.iter().any(|d| d.is_error()) {
+            diags.append(sem);
+        }
+        out[i] = diags;
+    }
+    check_config_files(sources, &mcf, &uses, &mut out);
+    for diags in &mut out {
+        diags.sort_by_key(|d| d.span.start);
+    }
+    out
+}
+
+/// Chaque `.cfg` du projet est lu (erreurs de syntaxe signalées même s'il ne sert pas encore),
+/// puis validé par chaque type qui l'utilise. Un fichier introuvable n'est une erreur que pour
+/// `config` : `loadConfig` peut lire un fichier créé après la compilation.
+fn check_config_files(
+    sources: &[Source],
+    mcf: &[usize],
+    uses: &[ConfigUse],
+    out: &mut [Vec<Diagnostic>],
+) {
+    let names: Vec<String> = sources
+        .iter()
+        .map(|s| mcf_config::normalize_name(&s.name))
+        .collect();
+    let parsed: Vec<Option<mcf_config::Json>> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            if !s.is_config() {
+                return None;
             }
-            diags.sort_by_key(|d| d.span.start);
-            diags
+            match mcf_config::parse(&s.text) {
+                Ok(v) => Some(v),
+                Err(d) => {
+                    out[i].push(*d);
+                    None
+                }
+            }
         })
-        .collect()
+        .collect();
+    for u in uses {
+        let from = mcf[u.file];
+        let found = mcf_config::resolve_path(&sources[from].name, &u.path).and_then(|target| {
+            (0..sources.len()).find(|&i| sources[i].is_config() && names[i] == target)
+        });
+        let Some(cfg) = found else {
+            if u.required {
+                out[from].push(
+                    Diagnostic::new(
+                        &codes::CONFIG_FILE_NOT_FOUND,
+                        u.path_span,
+                        format!("le fichier `{}` est introuvable dans le projet", u.path),
+                    )
+                    .suggestion(
+                        "le chemin part du dossier de ce fichier `.mcf`, et le `.cfg` doit être dans le dossier du projet",
+                    ),
+                );
+            }
+            continue;
+        };
+        let Some(value) = &parsed[cfg] else { continue };
+        for d in mcf_config::validate(value, &u.schema) {
+            if !out[cfg].contains(&d) {
+                out[cfg].push(d);
+            }
+        }
+    }
+}
+
+/// Fichier `.cfg` utilisé par le code : `config` (obligatoire) ou `loadConfig("littéral")`.
+struct ConfigUse {
+    file: usize,
+    path: String,
+    path_span: Span,
+    schema: SchemaRef,
+    required: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -56,6 +145,8 @@ enum Builtin {
     Print,
     Sleep,
     Duplicate,
+    /// `loadConfig("fichier.cfg")` : seulement pour initialiser une variable typée (D50).
+    LoadConfig,
 }
 
 #[derive(Clone, Debug)]
@@ -183,7 +274,13 @@ impl Typed {
 type Narrowings = Vec<(String, Ty)>;
 
 pub fn analyze(modules: &[&Module]) -> Vec<Vec<Diagnostic>> {
+    analyze_with_configs(modules).0
+}
+
+fn analyze_with_configs(modules: &[&Module]) -> (Vec<Vec<Diagnostic>>, Vec<ConfigUse>) {
     let mut a = Analyzer {
+        configs: HashSet::new(),
+        config_uses: Vec::new(),
         tables: Vec::new(),
         roots: Vec::new(),
         imports: vec![HashMap::new(); modules.len()],
@@ -222,10 +319,13 @@ pub fn analyze(modules: &[&Module]) -> Vec<Vec<Diagnostic>> {
         a.check_items(&module.items, a.roots[file]);
     }
     a.advise_loops_in_tasks();
-    a.diags
+    (a.diags, a.config_uses)
 }
 
 struct Analyzer {
+    /// Globales déclarées par `config` : (table, nom). Elles se lisent seulement (D49).
+    configs: HashSet<(usize, String)>,
+    config_uses: Vec<ConfigUse>,
     tables: Vec<Table>,
     roots: Vec<usize>,
     /// Par fichier : nom importé → (table d'origine, nom). Résolu à la lecture pour voir les types à jour.
@@ -520,6 +620,12 @@ impl Analyzer {
         for item in items {
             match item {
                 Item::Global(v) => self.declare(table, &v.name, Sym::Global { ty: Ty::Unknown }),
+                Item::Config(c) => {
+                    self.declare(table, &c.name, Sym::Global { ty: Ty::Unknown });
+                    if !self.is_rejected(&c.name) {
+                        self.configs.insert((table, c.name.name.clone()));
+                    }
+                }
                 Item::Func(f) => self.declare(
                     table,
                     &f.name,
@@ -702,6 +808,10 @@ impl Analyzer {
                 Item::Global(v) => {
                     let ty = self.type_decl(&v.ty, table, false, true);
                     self.set_sym(table, &v.name, Sym::Global { ty });
+                }
+                Item::Config(c) => {
+                    let ty = self.type_decl(&c.ty, table, false, true);
+                    self.set_sym(table, &c.name, Sym::Global { ty });
                 }
                 Item::Func(f) => {
                     let params = f
@@ -989,6 +1099,7 @@ impl Analyzer {
                 let (ident, what) = match item {
                     Item::Func(f) => (&f.name, None),
                     Item::Global(v) => (&v.name, Some("une variable")),
+                    Item::Config(c) => (&c.name, Some("une configuration")),
                     Item::Scope(s) => (&s.name, Some("un scope")),
                     Item::Struct(s) => (&s.name, Some("une structure")),
                     Item::Enum(e) => (&e.name, Some("une énumération")),
@@ -1067,8 +1178,38 @@ impl Analyzer {
                     if let (Some(init), Some(Sym::Global { ty })) =
                         (&v.init, self.tables[table].names.get(&v.name.name).cloned())
                     {
-                        let value = self.check_expr(init, table);
-                        self.expect_assignable(&value.ty, &ty, init.span);
+                        if !self.check_load_config(init, &ty, v.ty.span, table) {
+                            let value = self.check_expr(init, table);
+                            self.expect_assignable(&value.ty, &ty, init.span);
+                        }
+                    }
+                }
+                Item::Config(c) => {
+                    if self.is_rejected(&c.name) {
+                        continue;
+                    }
+                    let Some(Sym::Global { ty }) =
+                        self.tables[table].names.get(&c.name.name).cloned()
+                    else {
+                        continue;
+                    };
+                    let schema = self.config_schema(&ty, c.ty.span);
+                    match mcf_config::check_path(&c.path) {
+                        Err(m) => self.report(
+                            Diagnostic::new(&codes::CONFIG_INVALID_PATH, c.path_span, m)
+                                .expected("\"dossier/fichier.cfg\""),
+                        ),
+                        Ok(()) => {
+                            if let Some(schema) = schema {
+                                self.config_uses.push(ConfigUse {
+                                    file: self.file,
+                                    path: c.path.clone(),
+                                    path_span: c.path_span,
+                                    schema,
+                                    required: true,
+                                });
+                            }
+                        }
                     }
                 }
                 Item::Func(f) => {
@@ -1483,6 +1624,7 @@ impl Analyzer {
             "print" => Some(Resolved::Sym(Sym::Builtin(Builtin::Print))),
             "sleep" => Some(Resolved::Sym(Sym::Builtin(Builtin::Sleep))),
             "duplicate" => Some(Resolved::Sym(Sym::Builtin(Builtin::Duplicate))),
+            "loadConfig" => Some(Resolved::Sym(Sym::Builtin(Builtin::LoadConfig))),
             _ => None,
         }
     }
@@ -1716,10 +1858,13 @@ impl Analyzer {
             Stmt::Local(v) => {
                 let ty = self.type_decl(&v.ty, table, false, true);
                 // L'initialisation est vérifiée avant la déclaration : `_x: Int = _x;` est refusé.
-                let init_ty = v.init.as_ref().map(|init| {
+                let init_ty = v.init.as_ref().and_then(|init| {
+                    if self.check_load_config(init, &ty, v.ty.span, table) {
+                        return None;
+                    }
                     let value = self.check_expr(init, table);
                     self.expect_assignable(&value.ty, &ty, init.span);
-                    value.ty
+                    Some(value.ty)
                 });
                 self.declare_local(&v.name, ty.clone());
                 // Une locale DualType initialisée a un type actif connu.
@@ -1747,6 +1892,18 @@ impl Analyzer {
                         .suggestion(
                             "copier la valeur dans une locale : `_channel: String = meta.channel;`",
                         ),
+                    );
+                }
+                if let Some(name) = self.config_root(target, table) {
+                    self.report(
+                        Diagnostic::new(
+                            &codes::CONFIG_READ_ONLY,
+                            target.span,
+                            format!("`{name}` vient d'un fichier de configuration : elle se lit seulement"),
+                        )
+                        .suggestion(format!(
+                            "modifier le fichier `.cfg`, ou travailler sur une copie : `_copy: Type = duplicate({name});`"
+                        )),
                     );
                 }
                 let t = self.check_any(target, table);
@@ -2426,7 +2583,37 @@ impl Analyzer {
             Resolved::Method { origin, .. } => *origin,
             _ => None,
         };
+        if let (ExprKind::Member { object, field }, Resolved::Method { origin: None, .. }) =
+            (&callee.kind, &c.res)
+        {
+            if MUTATING_METHODS.contains(&field.name.as_str()) {
+                if let Some(name) = self.config_root(object, table) {
+                    self.report(
+                        Diagnostic::new(
+                            &codes::CONFIG_READ_ONLY,
+                            callee.span,
+                            format!(
+                                "`{name}` vient d'un fichier de configuration : `{}` la modifierait",
+                                field.name
+                            ),
+                        )
+                        .suggestion(format!("travailler sur une copie : `duplicate({name})`")),
+                    );
+                }
+            }
+        }
         let ret = match c.res {
+            Resolved::Sym(Sym::Builtin(Builtin::LoadConfig)) => {
+                self.report(
+                    Diagnostic::new(
+                        &codes::LOAD_CONFIG_NEEDS_TYPE,
+                        expr.span,
+                        "`loadConfig` doit initialiser une variable dont le type est écrit",
+                    )
+                    .suggestion("`_settings: MonType = loadConfig(\"fichier.cfg\");` : le type dit comment valider le fichier"),
+                );
+                Ty::Unknown
+            }
             Resolved::Sym(Sym::Func { params, ret, .. }) => {
                 count_error(self, params.len());
                 for ((t, span), p) in arg_tys.iter().zip(&params) {
@@ -2507,6 +2694,236 @@ impl Analyzer {
             }
         };
         Typed::value(ret)
+    }
+
+    // ---------------------------------------------------------------- configuration (06xx)
+
+    /// `init` est-il un appel à `loadConfig` ? Si oui, le vérifie avec le type de la variable
+    /// qu'il initialise (`ty_span` : où ce type est écrit) et retourne `true`.
+    fn check_load_config(&mut self, init: &Expr, target: &Ty, ty_span: Span, table: usize) -> bool {
+        let ExprKind::Call { callee, args } = &init.kind else {
+            return false;
+        };
+        let ExprKind::Name { ident } = &callee.kind else {
+            return false;
+        };
+        if !matches!(
+            self.lookup(&ident.name, table),
+            Some(Resolved::Sym(Sym::Builtin(Builtin::LoadConfig)))
+        ) {
+            return false;
+        }
+        for a in args {
+            let t = self.check_expr(a, table);
+            self.expect_assignable(&t.ty, &Ty::String, a.span);
+        }
+        if args.len() != 1 {
+            self.report(
+                Diagnostic::new(
+                    &codes::ARGUMENT_COUNT_MISMATCH,
+                    init.span,
+                    format!("1 argument(s) attendu(s), {} fourni(s)", args.len()),
+                )
+                .expected("1")
+                .received(args.len().to_string()),
+            );
+        }
+        let schema = self.config_schema(target, ty_span);
+        if let (Some(arg), Some(schema)) = (args.first(), schema) {
+            // Chemin connu à la compilation : le fichier est vérifié s'il est dans le projet.
+            if let ExprKind::Str { value } = &arg.kind {
+                match mcf_config::check_path(value) {
+                    Err(m) => {
+                        self.report(Diagnostic::new(&codes::CONFIG_INVALID_PATH, arg.span, m))
+                    }
+                    Ok(()) => self.config_uses.push(ConfigUse {
+                        file: self.file,
+                        path: value.clone(),
+                        path_span: arg.span,
+                        schema,
+                        required: false,
+                    }),
+                }
+            }
+        }
+        true
+    }
+
+    /// Schéma JSON d'un type de configuration ; `None` (avec diagnostic) s'il ne peut pas
+    /// venir d'un `.cfg`, ou si le type est déjà en erreur.
+    fn config_schema(&mut self, ty: &Ty, span: Span) -> Option<SchemaRef> {
+        let mut memo = HashMap::new();
+        let mut problems = Vec::new();
+        let schema = self.schema_of(ty, "", &mut memo, &mut Vec::new(), &mut problems);
+        for (code, message) in &problems {
+            self.report(Diagnostic::new(code, span, message.clone()));
+        }
+        if problems.is_empty() {
+            schema
+        } else {
+            None
+        }
+    }
+
+    /// `at` : où le type apparaît (« le champ `Server.start` »), vide pour le type déclaré.
+    fn schema_of(
+        &self,
+        ty: &Ty,
+        at: &str,
+        memo: &mut HashMap<usize, SchemaRef>,
+        visiting: &mut Vec<usize>,
+        problems: &mut Vec<(&'static mcf_diagnostics::Code, String)>,
+    ) -> Option<SchemaRef> {
+        let place = if at.is_empty() {
+            String::new()
+        } else {
+            format!(" ({at})")
+        };
+        let unsupported = |problems: &mut Vec<(&'static mcf_diagnostics::Code, String)>,
+                           why: String| {
+            let entry = (&codes::CONFIG_UNSUPPORTED_TYPE, why);
+            if !problems.contains(&entry) {
+                problems.push(entry);
+            }
+            None
+        };
+        Some(Arc::new(match ty {
+            Ty::Unknown => return None,
+            Ty::Bool => Schema::Bool,
+            Ty::Int => Schema::Int,
+            Ty::Float => Schema::Float,
+            Ty::String => Schema::String,
+            Ty::Enum { id, name } => Schema::Enum {
+                id: *id,
+                name: name.clone(),
+                variants: self.enums[*id].variants.clone(),
+            },
+            Ty::Struct { id, name } => {
+                if let Some(s) = memo.get(id) {
+                    return Some(s.clone());
+                }
+                // Structure récursive : déjà signalée (MCF0244).
+                if visiting.contains(id) {
+                    return None;
+                }
+                visiting.push(*id);
+                let mut fields = Vec::new();
+                let mut complete = true;
+                for (f, fty) in &self.structs[*id].fields {
+                    let inner = format!("le champ `{name}.{f}`");
+                    match self.schema_of(fty, &inner, memo, visiting, problems) {
+                        Some(s) => fields.push((f.clone(), s)),
+                        None => complete = false,
+                    }
+                }
+                visiting.pop();
+                if !complete {
+                    return None;
+                }
+                let s = Arc::new(Schema::Struct {
+                    id: *id,
+                    name: name.clone(),
+                    fields,
+                });
+                memo.insert(*id, s.clone());
+                return Some(s);
+            }
+            Ty::Array(e) if e.is_unknown() => {
+                return unsupported(
+                    problems,
+                    format!("`Array` sans type d'élément{place} : écrire `Array<T>` pour que le fichier puisse être vérifié"),
+                )
+            }
+            Ty::Array(e) => Schema::Array(self.schema_of(e, at, memo, visiting, problems)?),
+            Ty::Map(k, v) => {
+                if **k != Ty::String {
+                    return unsupported(
+                        problems,
+                        format!("`{ty}`{place} : une map de configuration a des clés `String` (les clés d'un objet JSON sont des chaînes)"),
+                    );
+                }
+                Schema::Map(self.schema_of(v, at, memo, visiting, problems)?)
+            }
+            Ty::Dual(a, b) => {
+                let sa = self.schema_of(a, at, memo, visiting, problems);
+                let sb = self.schema_of(b, at, memo, visiting, problems);
+                let (sa, sb) = (sa?, sb?);
+                if mcf_config::ambiguous_dual(&sa, &sb) {
+                    problems.push((
+                        &codes::CONFIG_AMBIGUOUS_TYPE,
+                        format!("`{ty}`{place} : les deux types s'écrivent de la même façon en JSON, le fichier ne pourrait pas dire lequel il contient"),
+                    ));
+                    return None;
+                }
+                Schema::Dual(sa, sb)
+            }
+            other => {
+                return unsupported(
+                    problems,
+                    format!("le type `{other}`{place} ne peut pas venir d'un fichier `.cfg` (types permis : Bool, Int, Float, String, énumérations, structures, Array<T>, Map<String, T>)"),
+                )
+            }
+        }))
+    }
+
+    /// Si `target` désigne une configuration ou une partie d'elle (`server`, `server.port`,
+    /// `Settings.server.hosts[0]`), retourne son nom.
+    fn config_root(&self, target: &Expr, table: usize) -> Option<String> {
+        match &target.kind {
+            ExprKind::Name { ident } => self
+                .is_config_name(&ident.name, table)
+                .then(|| ident.name.clone()),
+            ExprKind::Member { object, field } => {
+                if let Some(t) = self.scope_of(object, table) {
+                    return self
+                        .configs
+                        .contains(&(t, field.name.clone()))
+                        .then(|| field.name.clone());
+                }
+                self.config_root(object, table)
+            }
+            ExprKind::Index { object, .. } | ExprKind::Paren { expr: object } => {
+                self.config_root(object, table)
+            }
+            _ => None,
+        }
+    }
+
+    /// Table du scope désigné par `e` (`Settings`, `A.B`), sinon `None`.
+    fn scope_of(&self, e: &Expr, table: usize) -> Option<usize> {
+        match &e.kind {
+            ExprKind::Name { ident } => match self.lookup(&ident.name, table)? {
+                Resolved::Sym(Sym::Scope { table }) => Some(table),
+                _ => None,
+            },
+            ExprKind::Member { object, field } => {
+                let t = self.scope_of(object, table)?;
+                match self.tables[t].names.get(&field.name)? {
+                    Sym::Scope { table } => Some(*table),
+                    _ => None,
+                }
+            }
+            ExprKind::Paren { expr } => self.scope_of(expr, table),
+            _ => None,
+        }
+    }
+
+    /// Même parcours que `lookup` : le nom désigne-t-il une globale `config` ?
+    fn is_config_name(&self, name: &str, table: usize) -> bool {
+        if self.frames.iter().any(|f| f.locals.contains_key(name)) {
+            return false;
+        }
+        let mut t = Some(table);
+        while let Some(id) = t {
+            if self.tables[id].names.contains_key(name) {
+                return self.configs.contains(&(id, name.to_string()));
+            }
+            t = self.tables[id].parent;
+        }
+        match self.imports[self.file].get(name) {
+            Some((t, n)) => self.configs.contains(&(*t, n.clone())),
+            None => false,
+        }
     }
 
     // ---------------------------------------------------------------- conseils (05xx)
@@ -2776,6 +3193,9 @@ fn path_expr(path: &Path) -> Expr {
 }
 
 /// Nom à la racine d'une cible d'affectation (`meta` dans `meta.a.b`).
+/// Méthodes natives qui modifient la collection qui les reçoit.
+const MUTATING_METHODS: &[&str] = &["push", "pop", "removeAt", "remove"];
+
 fn root_name(e: &Expr) -> Option<&str> {
     match &e.kind {
         ExprKind::Name { ident } => Some(&ident.name),

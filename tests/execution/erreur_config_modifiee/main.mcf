@@ -1,0 +1,10 @@
+// erreur: MCF0414
+struct Server { port: Int; }
+
+config server: Server = "server.cfg";
+
+func main(): Void {
+    _s: Server = server;
+    print(_s.port);
+    _s.port = 1;
+}

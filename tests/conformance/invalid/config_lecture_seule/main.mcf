@@ -1,0 +1,18 @@
+// attendu: MCF0614, MCF0614, MCF0614, MCF0614
+struct Server {
+    port: Int;
+    hosts: Array<String>;
+}
+
+config server: Server = "server.cfg";
+
+scope Settings {
+    config other: Server = "server.cfg";
+}
+
+func main(): Void {
+    server.port = 1;
+    server.hosts.push("c");
+    server.hosts[0] = "z";
+    Settings.other.port = 2;
+}

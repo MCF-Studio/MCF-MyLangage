@@ -1,0 +1,11 @@
+// erreur: MCF0413
+// Le fichier visé existe et est conforme, mais il est hors du projet (D51).
+struct Limits {
+    users: Int;
+    ratio: Int, Float;
+}
+
+func main(): Void {
+    _dir: String = "../configuration/limites/";
+    _l: Limits = loadConfig(_dir + "petit.cfg");
+}

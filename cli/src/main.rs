@@ -14,6 +14,7 @@ MCF – MyLangage
 
 Usage :
   mcf check <fichier|dossier> [--format text|json] [--strict] [--no-hints]
+             (vérifie les .mcf et les fichiers de configuration .cfg)
   mcf run <fichier|dossier> [--strict] [--no-hints]
   mcf describe errors|keywords [--format text|json]
   mcf version
@@ -99,26 +100,43 @@ fn main() -> ExitCode {
     }
 }
 
+/// Fichiers d'un projet : `.mcf` et `.cfg` du dossier et de ses sous-dossiers. Pour un fichier
+/// seul, le projet est ce fichier plus les `.cfg` de son dossier (qu'il peut lire avec `config`).
 fn collect_sources(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if path.is_file() {
         out.push(path.to_path_buf());
+        if path.extension().is_some_and(|e| e == "mcf") {
+            let dir = match path.parent() {
+                Some(d) if !d.as_os_str().is_empty() => d,
+                _ => Path::new("."),
+            };
+            collect_dir(dir, out, &["cfg"])?;
+        }
         return Ok(());
     }
+    collect_dir(path, out, &["mcf", "cfg"])
+}
+
+fn collect_dir(path: &Path, out: &mut Vec<PathBuf>, extensions: &[&str]) -> std::io::Result<()> {
     for entry in std::fs::read_dir(path)? {
         let p = entry?.path();
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         if p.is_dir() {
             if !name.starts_with('.') && name != "target" && name != "dist" {
-                collect_sources(&p, out)?;
+                collect_dir(&p, out, extensions)?;
             }
-        } else if p.extension().is_some_and(|e| e == "mcf") {
+        } else if p
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| extensions.contains(&e))
+        {
             out.push(p);
         }
     }
     Ok(())
 }
 
-/// Lit les fichiers `.mcf` du chemin, triés par nom. Tout le dossier forme un seul projet :
+/// Lit les fichiers `.mcf` et `.cfg` du chemin, triés par nom. Tout le dossier forme un seul projet :
 /// les imports sont résolus entre ses fichiers.
 fn load_sources(command: &str, opts: &Options) -> Result<Vec<Source>, ExitCode> {
     let [target] = opts.positional.as_slice() else {
@@ -131,6 +149,7 @@ fn load_sources(command: &str, opts: &Options) -> Result<Vec<Source>, ExitCode> 
         return Err(ExitCode::from(2));
     }
     paths.sort();
+    paths.dedup();
     let mut sources = Vec::new();
     for path in &paths {
         let text = match std::fs::read_to_string(path) {
@@ -241,9 +260,37 @@ fn run(opts: &Options) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    let parsed: Vec<_> = sources.iter().map(|s| mcf_syntax::parse(&s.text)).collect();
+    // L'interpréteur reçoit le code ; il relit lui-même les `.cfg` au démarrage.
+    let (code_files, code_sources): (Vec<SourceFile>, Vec<&Source>) = files
+        .into_iter()
+        .zip(&sources)
+        .filter(|(_, s)| !s.is_config())
+        .unzip();
+    let files = code_files;
+    let parsed: Vec<_> = code_sources
+        .iter()
+        .map(|s| mcf_syntax::parse(&s.text))
+        .collect();
     let modules: Vec<_> = parsed.iter().map(|p| &p.module).collect();
-    let Err(err) = mcf_runtime::run(&modules, &files, &mut std::io::stdout()) else {
+    // Racine du projet : le dossier passé à `mcf run`, ou celui du fichier passé.
+    let target = Path::new(&opts.positional[0]);
+    let root = if target.is_file() {
+        target.parent().map(Path::to_path_buf).unwrap_or_default()
+    } else {
+        target.to_path_buf()
+    };
+    let dirs: Vec<PathBuf> = files
+        .iter()
+        .map(|f| {
+            Path::new(&f.name)
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default()
+        })
+        .collect();
+    let Err(err) =
+        mcf_runtime::run_in_project(&modules, &files, &dirs, &root, &mut std::io::stdout())
+    else {
         return ExitCode::SUCCESS;
     };
     let d = &err.diagnostic;

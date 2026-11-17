@@ -6,6 +6,7 @@
 //!   s'arrêter sur cette erreur (après avoir affiché `nom.attendu`, s'il existe).
 //! - Chaque entrée doit d'abord passer la vérification sans erreur ni avertissement
 //!   (les conseils sont ignorés).
+//! - Les fichiers `.cfg` d'un dossier font partie du projet (phase 9).
 
 use mcf_semantic::{check_project, Source};
 use std::fs;
@@ -15,16 +16,25 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/execution")
 }
 
+/// Fichiers `.mcf` et `.cfg` d'une entrée, sous-dossiers compris.
+fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+    for e in fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            collect(&p, out);
+        } else if p.extension().is_some_and(|x| x == "mcf" || x == "cfg") {
+            out.push(p);
+        }
+    }
+}
+
 fn sources(entry: &Path) -> Vec<Source> {
-    let mut files: Vec<PathBuf> = if entry.is_dir() {
-        fs::read_dir(entry)
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .filter(|p| p.extension().is_some_and(|x| x == "mcf"))
-            .collect()
+    let mut files = Vec::new();
+    if entry.is_dir() {
+        collect(entry, &mut files);
     } else {
-        vec![entry.to_path_buf()]
-    };
+        files.push(entry.to_path_buf());
+    }
     files.sort();
     files
         .into_iter()
@@ -46,7 +56,11 @@ fn run_entry(entry: &Path) -> Result<(), String> {
     if !diags.is_empty() {
         return Err(format!("refusé à la vérification : {diags:?}"));
     }
-    let expected_error = srcs[0]
+    let first_code = srcs
+        .iter()
+        .find(|s| !s.is_config())
+        .expect("un fichier .mcf");
+    let expected_error = first_code
         .text
         .lines()
         .next()
@@ -56,10 +70,11 @@ fn run_entry(entry: &Path) -> Result<(), String> {
         .map(|s| s.replace("\r\n", "\n"))
         .unwrap_or_default();
 
-    let parsed: Vec<_> = srcs.iter().map(|s| mcf_syntax::parse(&s.text)).collect();
+    let code: Vec<_> = srcs.iter().filter(|s| !s.is_config()).collect();
+    let parsed: Vec<_> = code.iter().map(|s| mcf_syntax::parse(&s.text)).collect();
     let modules: Vec<_> = parsed.iter().map(|p| &p.module).collect();
     // Noms courts : `meta.source` affiche « fichier.mcf:ligne » quel que soit le dossier.
-    let files: Vec<_> = srcs
+    let files: Vec<_> = code
         .iter()
         .map(|s| {
             let short = Path::new(&s.name).file_name().unwrap().to_string_lossy();
@@ -67,7 +82,11 @@ fn run_entry(entry: &Path) -> Result<(), String> {
         })
         .collect();
     let mut out = Vec::new();
-    let result = mcf_runtime::run(&modules, &files, &mut out);
+    let dirs: Vec<_> = code
+        .iter()
+        .map(|s| Path::new(&s.name).parent().unwrap().to_path_buf())
+        .collect();
+    let result = mcf_runtime::run_with_dirs(&modules, &files, &dirs, &mut out);
     let out = String::from_utf8(out).unwrap();
 
     if out != expected_out {

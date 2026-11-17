@@ -1,0 +1,7 @@
+// attendu: MCF0615, MCF0615
+struct Server { port: Int; }
+func main(): Void {
+    print(loadConfig("server.cfg"));
+    _s: Server = Server { port: 1 };
+    _s = loadConfig("server.cfg");
+}

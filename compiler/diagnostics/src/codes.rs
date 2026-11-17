@@ -1,7 +1,8 @@
 //! Registre des identifiants de diagnostics.
 //!
 //! Plages : 00xx lexical, 01xx syntaxe, 02xx sémantique/types, 03xx sécurité (à venir),
-//! 04xx exécution (`mcf run`), 05xx conseils pour apprendre (jamais bloquants).
+//! 04xx exécution (`mcf run`), 05xx conseils pour apprendre (jamais bloquants),
+//! 06xx fichiers de configuration `.cfg`.
 
 use crate::{Category, Severity};
 use serde::Serialize;
@@ -116,10 +117,27 @@ codes! {
     TASK_CANCELLED = "MCF0410", Runtime, Error, "`await` sur une tâche annulée.";
     DEADLOCK = "MCF0411", Runtime, Error, "Toutes les tâches s'attendent : le programme ne peut plus avancer.";
     TASK_START_FAILED = "MCF0412", Runtime, Error, "Le système refuse de démarrer une nouvelle tâche.";
+    CONFIG_LOAD_FAILED = "MCF0413", Runtime, Error, "Fichier de configuration illisible ou non conforme au démarrage ou dans `loadConfig`.";
+    CONFIG_MODIFIED = "MCF0414", Runtime, Error, "Modification d'une valeur venue d'une déclaration `config` (lecture seule).";
     INTERNAL_RUNTIME_ERROR = "MCF0499", Runtime, Error, "Erreur interne de l'interpréteur (à signaler).";
 
     LOOP_WITHOUT_PAUSE_IN_TASK = "MCF0500", Advice, Hint, "Boucle sans pause dans une fonction lancée en tâche : les autres tâches attendent qu'elle finisse.";
     ENDLESS_LOOP_WITHOUT_PAUSE = "MCF0501", Advice, Hint, "`while (true)` qui ne s'arrête jamais et ne laisse jamais la main : le programme se fige.";
     FLOAT_EQUALITY = "MCF0502", Advice, Hint, "`==` entre décimaux : les arrondis rendent l'égalité exacte trompeuse.";
     COMPARISON_WITH_BOOL_LITERAL = "MCF0503", Advice, Hint, "Comparaison avec `true` / `false` inutile.";
+
+    CONFIG_SYNTAX = "MCF0600", Config, Error, "Fichier `.cfg` qui n'est pas du JSON valide (commentaires `//` et `/* */` permis).";
+    CONFIG_DUPLICATE_KEY = "MCF0601", Config, Error, "Clé présente deux fois dans le même objet d'un `.cfg`.";
+    CONFIG_LIMIT_EXCEEDED = "MCF0602", Config, Error, "Fichier `.cfg` trop gros ou trop imbriqué.";
+    CONFIG_FILE_NOT_FOUND = "MCF0610", Config, Error, "Fichier `.cfg` introuvable dans le projet.";
+    CONFIG_INVALID_PATH = "MCF0611", Config, Error, "Chemin de configuration invalide : relatif, avec `/`, terminé par `.cfg`.";
+    CONFIG_UNSUPPORTED_TYPE = "MCF0612", Config, Error, "Type qui ne peut pas venir d'un fichier `.cfg`.";
+    CONFIG_AMBIGUOUS_TYPE = "MCF0613", Config, Error, "DualType dont les deux types s'écrivent pareil en JSON.";
+    CONFIG_READ_ONLY = "MCF0614", Config, Error, "Une configuration déclarée par `config` se lit seulement.";
+    LOAD_CONFIG_NEEDS_TYPE = "MCF0615", Config, Error, "`loadConfig` doit initialiser une variable dont le type est écrit.";
+    CONFIG_WRONG_TYPE = "MCF0620", Config, Error, "Valeur JSON qui ne correspond pas au type MCF attendu.";
+    CONFIG_MISSING_KEY = "MCF0621", Config, Error, "Champ de la structure absent du `.cfg`.";
+    CONFIG_UNKNOWN_KEY = "MCF0622", Config, Error, "Clé du `.cfg` qui ne correspond à aucun champ.";
+    CONFIG_UNKNOWN_VARIANT = "MCF0623", Config, Error, "Chaîne qui ne nomme aucune variante de l'énumération.";
+    CONFIG_NUMBER_OUT_OF_RANGE = "MCF0624", Config, Error, "Nombre hors de la plage de `Int` ou de `Float`.";
 }

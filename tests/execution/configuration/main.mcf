@@ -1,0 +1,46 @@
+// `config` lu au démarrage, `loadConfig` à la demande, copie modifiable avec `duplicate`
+enum Mode { Debug, Release }
+
+struct Limits {
+    users: Int;
+    ratio: Int, Float;
+}
+
+struct Server {
+    port: Int;
+    name: String;
+    mode: Mode;
+    hosts: Array<String>;
+    quotas: Map<String, Int>;
+    limits: Limits;
+}
+
+config server: Server = "server.cfg";
+address: String = server.name + ":" + server.port;
+
+func main(): Void {
+    print(address);
+    print(server.mode == Mode.Release);
+    foreach (_h in server.hosts) do {
+        print(_h);
+    }
+    foreach (_k in server.quotas) do {
+        print(_k + " = " + server.quotas[_k]);
+    }
+    if (server.limits.ratio is Float) then {
+        print("ratio décimal");
+    }
+    _copy: Server = duplicate(server);
+    _copy.port = 9000;
+    _copy.hosts.push("c");
+    print(_copy.port);
+    print(server.port);
+    print(server.hosts.length());
+
+    _names: Array<String> = ["petit", "grand"];
+    foreach (_n in _names) do {
+        _l: Limits = loadConfig("limites/" + _n + ".cfg");
+        _l.users = _l.users + 1;
+        print(_n + " : " + _l.users);
+    }
+}

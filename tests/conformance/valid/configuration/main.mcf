@@ -1,0 +1,41 @@
+// Configuration : `config`, `loadConfig`, structures, énumérations, collections, DualType
+enum Mode { Debug, Release }
+
+struct Limits {
+    users: Int;
+    ratio: Int, Float;
+}
+
+struct Server {
+    port: Int;
+    name: String;
+    mode: Mode;
+    hosts: Array<String>;
+    quotas: Map<String, Int>;
+    limits: Limits;
+}
+
+config server: Server = "server.cfg";
+
+scope Settings {
+    config limits: Limits = "cfg/limits.cfg";
+}
+
+// Une globale peut être calculée à partir d'une configuration.
+address: String = server.name + ":" + server.port;
+
+func load(_path: String): Limits {
+    _l: Limits = loadConfig(_path);
+    return _l;
+}
+
+func main(): Void {
+    print(address);
+    print(Settings.limits.users);
+    _copy: Server = duplicate(server);
+    _copy.port = 9000;
+    _copy.hosts.push("c");
+    _other: Limits = loadConfig("cfg/limits.cfg");
+    _dyn: Limits = load("cfg/limits.cfg");
+    print(_other.users + _dyn.users);
+}

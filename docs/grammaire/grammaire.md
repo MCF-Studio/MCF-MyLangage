@@ -5,8 +5,8 @@ Base : cahier des charges 1.2, §21. Les écarts et compléments sont justifiés
 
 ```text
 Module          = { Item } ;
-Item            = GlobalDecl | FuncDecl | ScopeDecl | ImportDecl | EventDecl | OnHandler
-                | StructDecl | EnumDecl ;
+Item            = GlobalDecl | FuncDecl | ScopeDecl | ImportDecl | ConfigDecl | EventDecl
+                | OnHandler | StructDecl | EnumDecl ;
 
 GlobalDecl      = Ident ":" TypeDecl [ "=" Expr ] ";" ;
 LocalDecl       = LocalIdent ":" TypeDecl [ "=" Expr ] ";" ;
@@ -21,6 +21,7 @@ Param           = LocalIdent ":" TypeDecl ;
 
 ScopeDecl       = "scope" Ident "{" { Item } "}" ;
 ImportDecl      = "import" Path [ "as" Ident ] ";" ;
+ConfigDecl      = "config" Ident ":" TypeDecl "=" StringLit ";" ;   (* voir configuration.md *)
 StructDecl      = "struct" Ident "{" { Ident ":" TypeDecl ";" | FuncDecl } "}" ;
 EnumDecl        = "enum" Ident "{" [ Ident { "," Ident } [ "," ] ] "}" ;
 EventDecl       = "event" Path "(" [ Params ] ")" ( ";" | MetaDecl ) ;
@@ -88,7 +89,7 @@ Primary         = Int | Float | String | "true" | "false"
 | Type de retour absent | MCF0111 |
 | `;` après un bloc ou instruction vide | MCF0112 (avertissement, erreur en `--strict`) |
 | Instruction exécutable au niveau module | MCF0115 |
-| `func`, `scope`, `struct`, `enum`, `event`, `import`, `on` dans un bloc | MCF0116 |
+| `func`, `scope`, `struct`, `enum`, `event`, `import`, `config`, `on` dans un bloc | MCF0116 |
 | Champ de structure préfixé `_` | MCF0120 |
 | `start` suivi d'autre chose qu'un appel (`start 3`, `start f`) | MCF0121 |
 | Gestionnaire `on X(...) { }` dans un bloc (seul `on X => f` y est permis) | MCF0116 |

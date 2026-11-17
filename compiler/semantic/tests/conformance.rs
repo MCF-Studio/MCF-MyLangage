@@ -9,7 +9,8 @@
 //!
 //! Une entrée est soit un fichier `.mcf` (projet d'un seul fichier), soit un dossier
 //! (projet multi-fichiers ; les en-têtes `// attendu:` de ses fichiers sont concaténés
-//! dans l'ordre alphabétique des fichiers).
+//! dans l'ordre alphabétique des fichiers). Les `.cfg` d'un dossier font partie du projet ;
+//! comme ils acceptent les commentaires, ils peuvent aussi porter un en-tête `// attendu:`.
 
 use mcf_semantic::{check_project, Source};
 use std::fs;
@@ -29,16 +30,25 @@ fn entries(dir: &str) -> Vec<PathBuf> {
     out
 }
 
+/// Fichiers `.mcf` et `.cfg` d'une entrée, sous-dossiers compris.
+fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+    for e in fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            collect(&p, out);
+        } else if p.extension().is_some_and(|x| x == "mcf" || x == "cfg") {
+            out.push(p);
+        }
+    }
+}
+
 fn sources(entry: &Path) -> Vec<Source> {
-    let mut files = if entry.is_dir() {
-        fs::read_dir(entry)
-            .unwrap()
-            .map(|e| e.unwrap().path())
-            .filter(|p| p.extension().is_some_and(|x| x == "mcf"))
-            .collect()
+    let mut files = Vec::new();
+    if entry.is_dir() {
+        collect(entry, &mut files);
     } else {
-        vec![entry.to_path_buf()]
-    };
+        files.push(entry.to_path_buf());
+    }
     files.sort();
     files
         .into_iter()

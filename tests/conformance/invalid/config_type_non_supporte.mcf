@@ -1,0 +1,7 @@
+// attendu: MCF0612, MCF0612
+struct Server {
+    port: Int;
+    opened: DateTime;
+}
+config server: Server = "server.cfg";
+config ids: Map<Int, String> = "ids.cfg";

@@ -1,0 +1,7 @@
+// erreur: MCF0413
+struct Server { port: Int; }
+
+func main(): Void {
+    _which: String = "absent";
+    _s: Server = loadConfig(_which + ".cfg");
+}

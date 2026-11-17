@@ -1,0 +1,5 @@
+// attendu: MCF0116
+struct Server { port: Int; }
+func main(): Void {
+    config server: Server = "server.cfg";
+}

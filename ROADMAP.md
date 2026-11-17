@@ -12,7 +12,7 @@ Ordre tiré du cahier des charges 1.2 (§22). Une phase n'est terminée que lors
 | 6 | Conditions et boucles (exécution) | ✅ interpréteur, `mcf run`, point d'entrée `main` |
 | 7 | Imports et résolution des symboles | ✅ imports entre fichiers, alias (`as`) |
 | 8 | Événements et asynchrone | ✅ tâches (`start`/`await`), `start emit`, abonnements (`on X => f`), métadonnées |
-| 9 | Configuration `.cfg` | ⬜ |
+| 9 | Configuration `.cfg` | ✅ `config`, `loadConfig`, validation par les types, lecture confinée au projet |
 | 10 | Interfaces `.uimcf` | ⬜ |
 | 11 | Backend web | ⬜ |
 | 12 | Runtime, backend natif, **module `Secure` et chiffrement réseau** | ⬜ |

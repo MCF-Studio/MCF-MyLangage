@@ -1,0 +1,5 @@
+struct Theme {
+    color: String;
+}
+
+config theme: Theme = "theme.cfg";

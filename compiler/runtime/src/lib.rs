@@ -12,12 +12,14 @@
 //! `await`, fin de tâche) après avoir désigné la suivante. L'ordre est donc déterministe :
 //! file des tâches prêtes, puis minuteries dans l'ordre de leur échéance (horloge virtuelle).
 
+mod config;
 mod value;
 
 pub use value::{deep_copy, equal, StructValue, Value};
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::Scope;
 use std::time::{Duration, Instant};
@@ -66,20 +68,75 @@ type Res<T> = Result<T, Stop>;
 /// ordre de déclaration), appelle `func main(): Void`, puis attend la fin de toutes les tâches
 /// lancées par `start`. Ce que `print` affiche va dans `out`. `files` (même ordre que
 /// `modules`) sert à `meta.source` (« fichier:ligne » d'un `emit`).
+///
+/// Les fichiers `.cfg` (déclarations `config`, `loadConfig`) sont cherchés depuis le dossier
+/// de chaque fichier, tiré de son nom.
 pub fn run<W: Write + Send>(
     modules: &[&Module],
     files: &[SourceFile],
+    out: &mut W,
+) -> Result<(), Box<RuntimeError>> {
+    let dirs: Vec<PathBuf> = files
+        .iter()
+        .map(|f| {
+            std::path::Path::new(&f.name)
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_default()
+        })
+        .collect();
+    run_with_dirs(modules, files, &dirs, out)
+}
+
+/// Comme [`run`], quand le nom affiché d'un fichier n'est pas son chemin sur le disque :
+/// `dirs` donne le dossier réel de chaque fichier (même ordre que `modules`). La racine du
+/// projet est le plus proche dossier commun à tous les fichiers.
+pub fn run_with_dirs<W: Write + Send>(
+    modules: &[&Module],
+    files: &[SourceFile],
+    dirs: &[PathBuf],
+    out: &mut W,
+) -> Result<(), Box<RuntimeError>> {
+    let root = common_ancestor(dirs);
+    run_in_project(modules, files, dirs, &root, out)
+}
+
+/// Comme [`run_with_dirs`], avec la racine du projet donnée (le dossier passé à `mcf run`).
+/// Aucun fichier `.cfg` hors de cette racine n'est lu, même par un chemin calculé à
+/// l'exécution (`loadConfig("../" + nom + ".cfg")`) ou un lien symbolique (D51).
+pub fn run_in_project<W: Write + Send>(
+    modules: &[&Module],
+    files: &[SourceFile],
+    dirs: &[PathBuf],
+    root: &std::path::Path,
     out: &mut W,
 ) -> Result<(), Box<RuntimeError>> {
     std::thread::scope(|s| {
         std::thread::Builder::new()
             .name("mcf-run".into())
             .stack_size(STACK_SIZE)
-            .spawn_scoped(s, || run_here(modules, files, out))
+            .spawn_scoped(s, || run_here(modules, files, dirs, root, out))
             .map_err(|e| failure(&format!("impossible de démarrer l'exécution : {e}")))?
             .join()
             .unwrap_or_else(|_| Err(failure("l'interpréteur s'est arrêté de façon inattendue")))
     })
+}
+
+/// Plus proche dossier qui contient tous ceux de `dirs` (`""`, le dossier courant, sinon).
+fn common_ancestor(dirs: &[PathBuf]) -> PathBuf {
+    let Some((first, rest)) = dirs.split_first() else {
+        return PathBuf::new();
+    };
+    let mut common: Vec<_> = first.components().collect();
+    for d in rest {
+        let n = common
+            .iter()
+            .zip(d.components())
+            .take_while(|(a, b)| **a == *b)
+            .count();
+        common.truncate(n);
+    }
+    common.iter().collect()
 }
 
 fn failure(message: &str) -> Box<RuntimeError> {
@@ -93,9 +150,12 @@ fn failure(message: &str) -> Box<RuntimeError> {
 fn run_here<W: Write + Send>(
     modules: &[&Module],
     files: &[SourceFile],
+    dirs: &[PathBuf],
+    root: &std::path::Path,
     out: &mut W,
 ) -> Result<(), Box<RuntimeError>> {
-    let program = Program::build(modules, files);
+    let mut program = Program::build(modules, files, dirs);
+    program.root = root.to_path_buf();
     let shared = Shared {
         world: Mutex::new(World {
             out,
@@ -306,6 +366,8 @@ enum Builtin {
     Print,
     Sleep,
     Duplicate,
+    /// Traité à l'initialisation d'une variable typée (`init_value`), jamais appelé autrement.
+    LoadConfig,
 }
 
 /// Ce que désigne un nom déclaré (miroir des symboles de `mcf_semantic`).
@@ -333,9 +395,16 @@ struct FuncInfo<'a> {
 
 struct GlobalInfo<'a> {
     name: String,
-    decl: &'a VarDecl,
+    init: GlobalInit<'a>,
     table: usize,
     file: usize,
+}
+
+/// D'où vient la valeur d'une globale.
+enum GlobalInit<'a> {
+    Var(&'a VarDecl),
+    /// `config nom: Type = "fichier.cfg";` : lue avant toutes les autres globales.
+    Config(&'a ConfigDecl),
 }
 
 struct Handler<'a> {
@@ -356,6 +425,10 @@ struct EventInfo<'a> {
 struct Program<'a> {
     events: HashMap<String, EventInfo<'a>>,
     files: &'a [SourceFile],
+    /// Dossier de chaque fichier, d'où partent les chemins des `.cfg`.
+    dirs: &'a [PathBuf],
+    /// Racine du projet : aucun `.cfg` n'est lu en dehors (D51).
+    root: PathBuf,
     tables: Vec<Table>,
     roots: Vec<usize>,
     /// Par fichier : nom importé → (table d'origine, nom).
@@ -367,6 +440,9 @@ struct Program<'a> {
     handlers: HashMap<String, Vec<Handler<'a>>>,
     /// Méthodes des structures : (structure, nom) → fonction.
     methods: HashMap<(usize, String), usize>,
+    /// Même ordre que `types.structs` : déclaration, table et fichier d'une structure
+    /// (`None` pour les métadonnées d'événement), pour valider les `.cfg`.
+    struct_decls: Vec<Option<(&'a StructDecl, usize, usize)>>,
 }
 
 /// Nom de la locale qui porte le receveur d'une méthode (`self` est un mot-clé).
@@ -384,10 +460,12 @@ fn path_text(path: &Path) -> String {
 }
 
 impl<'a> Program<'a> {
-    fn build(modules: &[&'a Module], files: &'a [SourceFile]) -> Self {
+    fn build(modules: &[&'a Module], files: &'a [SourceFile], dirs: &'a [PathBuf]) -> Self {
         let mut p = Program {
             events: HashMap::new(),
             files,
+            dirs,
+            root: PathBuf::new(),
             tables: Vec::new(),
             roots: Vec::new(),
             imports: vec![HashMap::new(); modules.len()],
@@ -399,6 +477,7 @@ impl<'a> Program<'a> {
             },
             handlers: HashMap::new(),
             methods: HashMap::new(),
+            struct_decls: Vec::new(),
         };
         for (file, module) in modules.iter().enumerate() {
             let root = p.new_table(None);
@@ -431,11 +510,20 @@ impl<'a> Program<'a> {
                 Item::Global(v) => {
                     self.globals.push(GlobalInfo {
                         name: format!("{prefix}{}", v.name.name),
-                        decl: v,
+                        init: GlobalInit::Var(v),
                         table,
                         file,
                     });
                     (&v.name.name, Entity::Global(self.globals.len() - 1))
+                }
+                Item::Config(c) => {
+                    self.globals.push(GlobalInfo {
+                        name: format!("{prefix}{}", c.name.name),
+                        init: GlobalInit::Config(c),
+                        table,
+                        file,
+                    });
+                    (&c.name.name, Entity::Global(self.globals.len() - 1))
                 }
                 Item::Func(f) => {
                     self.funcs.push(FuncInfo {
@@ -457,6 +545,7 @@ impl<'a> Program<'a> {
                         name: s.name.name.clone(),
                         fields: s.fields.iter().map(|f| f.name.name.clone()).collect(),
                     });
+                    self.struct_decls.push(Some((s, table, file)));
                     for m in &s.methods {
                         self.funcs.push(FuncInfo {
                             name: format!("{prefix}{}.{}", s.name.name, m.name.name),
@@ -490,6 +579,7 @@ impl<'a> Program<'a> {
                 Item::Event(e) => {
                     let name = path_text(&e.name);
                     let meta = self.types.structs.len();
+                    self.struct_decls.push(None);
                     self.types.structs.push(StructInfo {
                         name: format!("{name}.meta"),
                         fields: e
@@ -631,7 +721,26 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 trace: Vec::new(),
             })));
         };
+        // Les configurations d'abord : une globale peut être calculée à partir d'elles.
         for (slot, g) in p.globals.iter().enumerate() {
+            let GlobalInit::Config(c) = g.init else {
+                continue;
+            };
+            self.calls.push(CallFrame {
+                name: format!("lecture de la configuration `{}`", g.name),
+                file: g.file,
+                table: g.table,
+                called_at: None,
+                blocks: Vec::new(),
+            });
+            let value = self.read_config(&c.ty, &c.path, c.path_span, true)?;
+            self.wm().globals[slot] = Some(value);
+            self.calls.pop();
+        }
+        for (slot, g) in p.globals.iter().enumerate() {
+            let GlobalInit::Var(decl) = g.init else {
+                continue;
+            };
             self.calls.push(CallFrame {
                 name: format!("initialisation de `{}`", g.name),
                 file: g.file,
@@ -639,9 +748,9 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 called_at: None,
                 blocks: Vec::new(),
             });
-            let value = match &g.decl.init {
-                Some(init) => Some(self.eval(init)?),
-                None => default_value(&g.decl.ty),
+            let value = match &decl.init {
+                Some(init) => Some(self.init_value(init, &decl.ty)?),
+                None => default_value(&decl.ty),
             };
             self.wm().globals[slot] = value;
             self.calls.pop();
@@ -913,6 +1022,49 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         )
     }
 
+    fn config_modified(&self, span: Span) -> Stop {
+        self.error_with(
+            Diagnostic::new(
+                &codes::CONFIG_MODIFIED,
+                span,
+                "cette valeur vient d'une déclaration `config` : elle se lit seulement",
+            )
+            .suggestion("travailler sur une copie : `_copy: Type = duplicate(nomDeLaConfig);`"),
+        )
+    }
+
+    /// Valeur initiale d'une variable déclarée avec le type `ty` : `loadConfig(chemin)` lit le
+    /// fichier avec ce type (la vérification garantit qu'il n'apparaît que là).
+    fn init_value(&mut self, init: &Expr, ty: &TypeDecl) -> Res<Value> {
+        if let ExprKind::Call { callee, args } = &init.kind {
+            if let ([arg], Some(Entity::Builtin(Builtin::LoadConfig))) =
+                (args.as_slice(), self.entity_of(callee))
+            {
+                let Value::Str(path) = self.eval(arg)? else {
+                    return Err(self.internal(arg.span, "`loadConfig` sans chaîne"));
+                };
+                return self.read_config(ty, &path, arg.span, false);
+            }
+        }
+        self.eval(init)
+    }
+
+    /// Lit un `.cfg` pour le type `ty`, depuis le dossier du fichier en cours.
+    fn read_config(&mut self, ty: &TypeDecl, path: &str, span: Span, frozen: bool) -> Res<Value> {
+        let (table, file) = (self.frame().table, self.frame().file);
+        let Some(schema) = self.p.schema_of(ty, table, file) else {
+            return Err(self.internal(span, "type de configuration non vérifié"));
+        };
+        self.p
+            .load_config(file, path, &schema, frozen)
+            .map_err(|message| {
+                self.error_with(
+                    Diagnostic::new(&codes::CONFIG_LOAD_FAILED, span, message)
+                        .suggestion("corriger le fichier, puis relancer ; `mcf check` vérifie les fichiers `.cfg` du projet"),
+                )
+            })
+    }
+
     fn unset(&self, name: &str, span: Span) -> Stop {
         self.error_with(
             Diagnostic::new(
@@ -953,6 +1105,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             "print" => Some(Entity::Builtin(Builtin::Print)),
             "sleep" => Some(Entity::Builtin(Builtin::Sleep)),
             "duplicate" => Some(Entity::Builtin(Builtin::Duplicate)),
+            "loadConfig" => Some(Entity::Builtin(Builtin::LoadConfig)),
             _ => None,
         }
     }
@@ -1274,6 +1427,9 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         };
         match b {
             Builtin::Duplicate => return Ok(deep_copy(arg)),
+            Builtin::LoadConfig => {
+                return Err(self.internal(arg_spans[0], "`loadConfig` hors d'une initialisation"))
+            }
             Builtin::Print => {
                 let text = display(arg, &self.p.types);
                 if writeln!(self.wm().out, "{text}").is_err() {
@@ -1312,6 +1468,11 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         mut args: Vec<Value>,
         arg_spans: &[Span],
     ) -> Res<Value> {
+        if matches!(method.name.as_str(), "push" | "pop" | "removeAt" | "remove")
+            && is_frozen(&recv)
+        {
+            return Err(self.config_modified(method.span));
+        }
         let arg = args.pop();
         let length = |n: usize| Value::Int(i64::try_from(n).unwrap_or(i64::MAX));
         match (&recv, method.name.as_str(), arg) {
@@ -1412,7 +1573,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             Stmt::Local(v) => {
                 // La valeur est calculée avant la déclaration (comme à la vérification).
                 let value = match &v.init {
-                    Some(init) => Some(self.eval(init)?),
+                    Some(init) => Some(self.init_value(init, &v.ty)?),
                     None => default_value(&v.ty),
                 };
                 self.declare_local(&v.name.name, value);
@@ -1563,6 +1724,9 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                         "champ d'une valeur qui n'est pas une structure",
                     ));
                 };
+                if s.is_frozen() {
+                    return Err(self.config_modified(target.span));
+                }
                 let index = self.field_index(&s.borrow(), field)?;
                 s.borrow_mut().fields[index] = v;
                 Ok(())
@@ -1571,6 +1735,9 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 let obj = self.eval(object)?;
                 let key = self.eval(index)?;
                 let v = self.eval(value)?;
+                if is_frozen(&obj) {
+                    return Err(self.config_modified(target.span));
+                }
                 match obj {
                     Value::Array(a) => {
                         let i = self.array_index(&a.borrow(), &key, index.span)?;
@@ -1959,6 +2126,16 @@ fn value_is(v: &Value, kind: &Kind) -> bool {
         | (Value::Listener(_), Kind::Listener) => true,
         (Value::Struct(s), Kind::Struct(id)) => s.borrow().id == *id,
         (Value::Enum { id, .. }, Kind::Enum(k)) => id == k,
+        _ => false,
+    }
+}
+
+/// Contenu partagé venu d'une déclaration `config` (lecture seule).
+fn is_frozen(v: &Value) -> bool {
+    match v {
+        Value::Array(a) => a.is_frozen(),
+        Value::Map(m) => m.is_frozen(),
+        Value::Struct(s) => s.is_frozen(),
         _ => false,
     }
 }

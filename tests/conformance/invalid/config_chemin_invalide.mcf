@@ -1,0 +1,4 @@
+// attendu: MCF0611, MCF0611
+struct Server { port: Int; }
+config a: Server = "/etc/server.cfg";
+config b: Server = "server.json";

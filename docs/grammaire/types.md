@@ -104,6 +104,10 @@ Elles s'appellent avec `.` sur une valeur (D38) ; un nom inconnu → MCF0241 ave
 
 Copie complète d'une valeur, du **même type** que l'original (D37) : `_copy: Team = duplicate(_team);`. Voir [exécution](execution.md#valeurs).
 
+## Configuration
+
+`config` et `loadConfig` : types acceptés depuis un `.cfg`, lecture seule (MCF0614) — voir [configuration](configuration.md).
+
 ## Littéraux
 
 `Int` = entier signé 64 bits (D15) : au-delà → MCF0229.
