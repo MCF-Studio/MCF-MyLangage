@@ -52,6 +52,13 @@ _copy.members.push("Max");     // _a.members est inchangé
 
 `emit` exécute **tout de suite** chaque gestionnaire `on` de l'événement, dans l'ordre du projet (fichiers puis déclarations), avant de passer à l'instruction suivante. Plusieurs `on` pour un même événement sont permis (D32). Un `emit` dans une tâche exécute les gestionnaires dans cette tâche.
 
+`start emit` lance au contraire chaque gestionnaire dans **sa propre tâche** (dans le même ordre) et continue aussitôt (D44). C'est l'émetteur qui choisit, comme pour `start f()` : on voit à l'endroit de l'`emit` ce qui part en arrière-plan.
+
+```mcf
+emit Saved("a.txt");        // attend que tous les gestionnaires aient fini
+start emit Saved("b.txt");  // n'attend pas ; le programme attendra ces tâches avant de finir
+```
+
 ## Tâches
 
 Une fonction ordinaire peut tourner en tâche : pas de mot-clé `async` sur les fonctions (D41).

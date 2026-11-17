@@ -196,9 +196,12 @@ pub enum Stmt {
     Continue {
         span: Span,
     },
+    /// `emit X(v);` ; `start emit X(v);` (`background`) lance chaque gestionnaire dans sa
+    /// propre tâche au lieu de l'exécuter tout de suite (DECISIONS D44).
     Emit {
         event: Path,
         args: Vec<Expr>,
+        background: bool,
         span: Span,
     },
     Expr {

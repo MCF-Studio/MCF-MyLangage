@@ -142,6 +142,12 @@ enum Job {
         args: Vec<Value>,
         spans: Vec<Span>,
     },
+    /// Gestionnaire `on` lancé par `start emit` : (événement, rang du gestionnaire).
+    Handler {
+        event: String,
+        index: usize,
+        args: Vec<Value>,
+    },
 }
 
 #[derive(Debug)]
@@ -727,6 +733,10 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     }
 
     fn run_job(&mut self, job: Job, called_at: (usize, Span)) -> Res<Value> {
+        if let Job::Handler { event, index, args } = job {
+            self.run_handler(&event, index, args, called_at)?;
+            return Ok(Value::Void);
+        }
         if matches!(job, Job::Func { .. }) {
             return self.invoke(job, called_at);
         }
@@ -1028,43 +1038,73 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 args,
                 spans,
             } => self.call_method(receiver, &method, args, &spans),
+            Job::Handler { event, index, args } => {
+                self.run_handler(&event, index, args, called_at)?;
+                Ok(Value::Void)
+            }
         }
     }
 
     /// `emit` : les gestionnaires `on` s'exécutent tout de suite, dans l'ordre du projet
     /// (DECISIONS D32 ; l'asynchrone arrive en phase 8).
-    fn emit(&mut self, event: &Path, args: Vec<Value>, span: Span) -> Res<()> {
+    ///
+    /// `start emit` (`background`) : chaque gestionnaire devient une tâche, lancée dans le
+    /// même ordre ; l'émetteur continue aussitôt (D44).
+    fn emit(&mut self, event: &Path, args: Vec<Value>, background: bool, span: Span) -> Res<()> {
         let p = self.p;
         let name = path_text(event);
-        let Some(handlers) = p.handlers.get(&name) else {
-            return Ok(());
-        };
-        let called_at = Some((self.frame().file, span));
-        for h in handlers {
-            if self.calls.len() >= MAX_CALL_DEPTH {
-                return Err(self.error(
-                    &codes::STACK_OVERFLOW,
-                    span,
-                    format!("trop d'événements imbriqués : plus de {MAX_CALL_DEPTH} appels"),
-                ));
+        let count = p.handlers.get(&name).map_or(0, Vec::len);
+        let called_at = (self.frame().file, span);
+        for index in 0..count {
+            if background {
+                let job = Job::Handler {
+                    event: name.clone(),
+                    index,
+                    args: args.clone(),
+                };
+                self.spawn(job, called_at)?;
+            } else {
+                self.run_handler(&name, index, args.clone(), called_at)?;
             }
-            let locals: Locals = h
-                .decl
-                .bindings
-                .iter()
-                .zip(args.iter().cloned())
-                .map(|(b, v)| (b.name.clone(), Some(v)))
-                .collect();
-            self.calls.push(CallFrame {
-                name: format!("on {name}"),
-                file: h.file,
-                table: h.table,
-                called_at,
-                blocks: vec![locals],
-            });
-            self.exec_block(&h.decl.body)?;
-            self.calls.pop();
         }
+        Ok(())
+    }
+
+    /// Exécute le gestionnaire `on` n° `index` de l'événement `event`.
+    fn run_handler(
+        &mut self,
+        event: &str,
+        index: usize,
+        args: Vec<Value>,
+        called_at: (usize, Span),
+    ) -> Res<()> {
+        let p = self.p;
+        let Some(h) = p.handlers.get(event).and_then(|hs| hs.get(index)) else {
+            return Err(self.internal(called_at.1, "gestionnaire d'événement inconnu"));
+        };
+        if self.calls.len() >= MAX_CALL_DEPTH {
+            return Err(self.error(
+                &codes::STACK_OVERFLOW,
+                called_at.1,
+                format!("trop d'événements imbriqués : plus de {MAX_CALL_DEPTH} appels"),
+            ));
+        }
+        let locals: Locals = h
+            .decl
+            .bindings
+            .iter()
+            .zip(args)
+            .map(|(b, v)| (b.name.clone(), Some(v)))
+            .collect();
+        self.calls.push(CallFrame {
+            name: format!("on {event}"),
+            file: h.file,
+            table: h.table,
+            called_at: Some(called_at),
+            blocks: vec![locals],
+        });
+        self.exec_block(&h.decl.body)?;
+        self.calls.pop();
         Ok(())
     }
 
@@ -1281,9 +1321,14 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             }
             Stmt::Break { .. } => return Ok(Flow::Break),
             Stmt::Continue { .. } => return Ok(Flow::Continue),
-            Stmt::Emit { event, args, span } => {
+            Stmt::Emit {
+                event,
+                args,
+                background,
+                span,
+            } => {
                 let values = args.iter().map(|a| self.eval(a)).collect::<Res<Vec<_>>>()?;
-                self.emit(event, values, *span)?;
+                self.emit(event, values, *background, *span)?;
             }
             Stmt::Expr { expr, .. } => {
                 self.eval(expr)?;

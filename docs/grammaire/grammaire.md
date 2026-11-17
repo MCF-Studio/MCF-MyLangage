@@ -35,7 +35,7 @@ Stmt            = LocalDecl
                 | "return" [ Expr ] ";"
                 | "break" ";"
                 | "continue" ";"
-                | "emit" Path "(" [ Args ] ")" ";"
+                | [ "start" ] "emit" Path "(" [ Args ] ")" ";"
                 | SimpleStmt ";" ;
 SimpleStmt      = Place "=" Expr | Expr ;
 Place           = Name | Postfix "." Ident | Postfix "[" Expr "]" ;

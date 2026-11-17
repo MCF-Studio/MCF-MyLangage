@@ -1419,8 +1419,10 @@ impl Analyzer {
                 self.scan_block(body, table, assigned, calls);
             }
             Stmt::Return { value, .. } => exprs.extend(value.iter()),
-            Stmt::Emit { args, .. } => {
-                *calls = true;
+            Stmt::Emit {
+                args, background, ..
+            } => {
+                *calls |= !background;
                 exprs.extend(args.iter());
             }
             Stmt::Expr { expr, .. } => exprs.push(expr),
@@ -1612,7 +1614,12 @@ impl Analyzer {
                     ));
                 }
             }
-            Stmt::Emit { event, args, span } => {
+            Stmt::Emit {
+                event,
+                args,
+                background,
+                span,
+            } => {
                 let params = self.check_event_use(event, args.len(), *span, "valeurs");
                 for (i, a) in args.iter().enumerate() {
                     let t = self.check_expr(a, table);
@@ -1620,7 +1627,10 @@ impl Analyzer {
                         self.expect_assignable(&t.ty, p, a.span);
                     }
                 }
-                self.forget_global_narrowings();
+                // `start emit` n'exécute rien tout de suite.
+                if !background {
+                    self.forget_global_narrowings();
+                }
             }
             Stmt::Expr { expr, .. } => {
                 self.check_expr(expr, table);

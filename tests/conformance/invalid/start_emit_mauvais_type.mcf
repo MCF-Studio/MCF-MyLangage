@@ -1,0 +1,6 @@
+// attendu: MCF0220
+event Saved(_file: String);
+
+func f(): Void {
+    start emit Saved(3);
+}

@@ -1,0 +1,18 @@
+// `start emit` (D44) : chaque gestionnaire devient une tâche, l'émetteur continue.
+event Saved(_file: String);
+
+on Saved(_file) {
+    sleep(20);
+    print("envoyé " + _file);
+}
+
+on Saved(_file) {
+    print("journal " + _file);
+}
+
+func main(): Void {
+    emit Saved("a.txt");
+    print("après emit");
+    start emit Saved("b.txt");
+    print("après start emit");
+}

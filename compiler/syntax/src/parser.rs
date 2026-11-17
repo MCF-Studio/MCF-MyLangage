@@ -711,17 +711,13 @@ impl Parser<'_> {
                 self.expect_semi();
                 Some(Stmt::Continue { span })
             }
-            K::Emit => {
+            K::Start if self.peek_at(1) == &K::Emit => {
                 let start = self.bump().span;
-                let event = self.path()?;
-                let args = self.call_args()?;
-                let end = self.prev_span();
-                self.expect_semi();
-                Some(Stmt::Emit {
-                    event,
-                    args,
-                    span: start.to(end),
-                })
+                self.emit_stmt(start, true)
+            }
+            K::Emit => {
+                let start = self.span();
+                self.emit_stmt(start, false)
             }
             K::Semi => {
                 self.stray_semicolon();
@@ -748,6 +744,21 @@ impl Parser<'_> {
                 Some(stmt)
             }
         }
+    }
+
+    /// `emit X(args);`, le mot `start` éventuel étant déjà consommé.
+    fn emit_stmt(&mut self, start: Span, background: bool) -> Option<Stmt> {
+        self.bump();
+        let event = self.path()?;
+        let args = self.call_args()?;
+        let end = self.prev_span();
+        self.expect_semi();
+        Some(Stmt::Emit {
+            event,
+            args,
+            background,
+            span: start.to(end),
+        })
     }
 
     /// Affectation ou expression, sans le `;` final (réutilisé par `for`).
