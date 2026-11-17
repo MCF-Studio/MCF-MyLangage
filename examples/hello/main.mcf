@@ -1,4 +1,4 @@
-// Premier exemple MCF : DualType, scopes et événements.
+// Premier exemple MCF : point d'entrée, DualType, scopes et événements.
 
 scope Player {
     name: String = "Alex";
@@ -18,4 +18,10 @@ event PlayerConnected(_playerId: Int);
 
 on PlayerConnected(_playerId) {
     print(_playerId);
+}
+
+// Point d'entrée du programme.
+func main(): Void {
+    Player.showState(10);
+    emit PlayerConnected(1);
 }

@@ -10,7 +10,7 @@ Le cahier des charges interdit les décisions structurantes silencieuses (§24).
 | D2 | Chiffrement | Tout ce qui transite est chiffré, clés propres à l'utilisateur, aucun accès MCF Studio (§26) | Exigence explicite | ✅ |
 | D3 | Type de retour | Obligatoire (`: Void` si rien). La grammaire §21 le marquait optionnel | « Explicite plutôt qu'implicite » ; tous les exemples 1.1 l'écrivent | 🟡 |
 | D4 | `;` après un bloc | Avertissement MCF0112, erreur en `--strict` | §3 : pas de `;` après `}` ; l'avertissement aide la migration depuis 1.0 | 🟡 |
-| D5 | Instructions au niveau module | Interdites (MCF0115) : uniquement des déclarations, comme la grammaire §21 | Le point d'entrée (`main` ?) reste à définir | 🟡 |
+| D5 | Instructions au niveau module | Interdites (MCF0115) : uniquement des déclarations, comme la grammaire §21 | Point d'entrée : `func main(): Void` (D29) | 🟡 |
 | D6 | Contenu d'un `scope` | Des déclarations (globales, func, scopes imbriqués…), pas des instructions | Exemple §7 | 🟡 |
 | D7 | `foreach` | Type de la variable de boucle optionnel : `foreach (_p in xs)` ou `foreach (_p: String in xs)` | Exemple §9.4 sans type, grammaire §21 avec | 🟡 |
 | D8 | `for` | 3ᵉ partie = affectation ou expression sans `;` | Exemple §9.3 (`_i = _i + 1`) | 🟡 |
@@ -34,3 +34,4 @@ Le cahier des charges interdit les décisions structurantes silencieuses (§24).
 | D26 | Syntaxe des structures | `struct Nom { champ: Type; }` sans `;` final ; littéral `Nom { champ: valeur }` ; champs sans `_` | 1.0 §5.2 adapté aux conventions 1.2 | 🟡 |
 | D27 | Littéral de structure | Tous les champs obligatoires, aucune valeur par défaut implicite | « Explicite plutôt qu'implicite » | 🟡 |
 | D28 | Énumérations | `enum Nom { A, B }`, variantes sans données, comparables par `==` / `!=` uniquement | Point §24.3 ouvert ; version minimale extensible | 🟡 |
+| D29 | Point d'entrée | `func main(): Void` à la racine d'un fichier, sans paramètre, un seul par projet (MCF0250, MCF0251) ; `main` réservé à la racine ; projet sans `main` accepté par `mcf check` (bibliothèque), exigé par `mcf run` | Choix de MCF Studio ; convention connue, explicite. Les arguments de ligne de commande passeront par une API native plutôt que par un paramètre | 🟡 |

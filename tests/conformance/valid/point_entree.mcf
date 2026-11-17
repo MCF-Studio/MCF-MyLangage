@@ -1,0 +1,11 @@
+// Point d'entrée du projet : `func main(): Void`, sans paramètre (D29)
+scope App {
+    // Un `main` dans un scope n'est pas le point d'entrée : nom libre.
+    func main(_level: Int): Int {
+        return _level;
+    }
+}
+
+func main(): Void {
+    print(App.main(1));
+}

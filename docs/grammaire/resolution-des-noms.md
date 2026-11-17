@@ -8,6 +8,21 @@ Implémentée par `compiler/semantic`. Base : cahier des charges 1.2, §7 et §8
 
 `mcf check <dossier>` traite **tout le dossier comme un seul projet** : chaque fichier `.mcf` est un module, et les imports sont résolus entre ces fichiers.
 
+### Point d'entrée
+
+Le programme démarre par `func main(): Void`, déclarée à la racine d'un fichier :
+
+```mcf
+func main(): Void {
+    print("Bonjour");
+}
+```
+
+- `main` à la racine d'un fichier est **réservé** au point d'entrée : aucun paramètre, retour `Void` (MCF0250). Une variable, un scope, une structure ou une énumération nommés `main` à la racine → MCF0250.
+- **Un seul** `main` par projet (MCF0251).
+- Un `main` rangé dans un scope (`App.main`) est une fonction ordinaire.
+- Un projet sans `main` reste vérifiable par `mcf check` (bibliothèque) ; `mcf run` l'exigera.
+
 ## Ordre de recherche d'un nom
 
 1. Blocs locaux, du plus proche au plus lointain (paramètres compris).

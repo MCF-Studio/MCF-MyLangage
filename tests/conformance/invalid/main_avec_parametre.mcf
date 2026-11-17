@@ -1,0 +1,3 @@
+// attendu: MCF0250
+func main(_args: Array<String>): Void {
+}

@@ -8,7 +8,8 @@
 //! DualType limité à deux types, narrowing par `is` suivi de façon conservatrice.
 //!
 //! Passes : 1) déclaration des noms ; 2) imports ; 3) signatures (types des globales, fonctions,
-//! champs, événements — un type peut venir d'un autre fichier) ; 4) structures récursives ; 5) corps.
+//! champs, événements — un type peut venir d'un autre fichier) ; 4) structures récursives ;
+//! 5) point d'entrée `func main(): Void` ; 6) corps.
 
 use std::collections::{HashMap, HashSet};
 
@@ -165,6 +166,7 @@ pub fn analyze(modules: &[&Module]) -> Vec<Vec<Diagnostic>> {
         a.resolve_signatures(&module.items, a.roots[file]);
     }
     a.check_recursive_structs();
+    a.check_entry_points(modules);
     for (file, module) in modules.iter().enumerate() {
         a.file = file;
         a.check_items(&module.items, a.roots[file]);
@@ -683,7 +685,86 @@ impl Analyzer {
         }
     }
 
-    // ================================================================ passe 5 : corps
+    // ================================================================ passe 5 : point d'entrée
+
+    /// `main` à la racine d'un fichier est réservé au point d'entrée du projet :
+    /// une fonction `func main(): Void` sans paramètre, une seule dans tout le projet.
+    /// Un projet sans `main` reste vérifiable (bibliothèque) ; c'est `mcf run` qui l'exigera.
+    fn check_entry_points(&mut self, modules: &[&Module]) {
+        let mut found = false;
+        for (file, module) in modules.iter().enumerate() {
+            self.file = file;
+            for item in &module.items {
+                let (ident, what) = match item {
+                    Item::Func(f) => (&f.name, None),
+                    Item::Global(v) => (&v.name, Some("une variable")),
+                    Item::Scope(s) => (&s.name, Some("un scope")),
+                    Item::Struct(s) => (&s.name, Some("une structure")),
+                    Item::Enum(e) => (&e.name, Some("une énumération")),
+                    Item::Import(_) | Item::Event(_) | Item::On(_) => continue,
+                };
+                if ident.name != "main" || self.is_rejected(ident) {
+                    continue;
+                }
+                let Item::Func(f) = item else {
+                    self.report(
+                        Diagnostic::new(
+                            &codes::INVALID_ENTRY_POINT,
+                            ident.span,
+                            format!(
+                                "`main` est réservé au point d'entrée, pas à {}",
+                                what.unwrap_or_default()
+                            ),
+                        )
+                        .expected("func main(): Void { ... }")
+                        .suggestion("renommer cette déclaration"),
+                    );
+                    continue;
+                };
+                if found {
+                    self.report(
+                        Diagnostic::new(
+                            &codes::DUPLICATE_ENTRY_POINT,
+                            ident.span,
+                            "le projet a déjà un point d'entrée `main` dans un autre fichier",
+                        )
+                        .suggestion("garder un seul `func main(): Void` par projet"),
+                    );
+                    continue;
+                }
+                found = true;
+                if let (Some(first), Some(last)) = (f.params.first(), f.params.last()) {
+                    self.report(
+                        Diagnostic::new(
+                            &codes::INVALID_ENTRY_POINT,
+                            first.span.to(last.span),
+                            "le point d'entrée `main` ne prend aucun paramètre",
+                        )
+                        .expected("func main(): Void")
+                        .received(format!("{} paramètre(s)", f.params.len())),
+                    );
+                }
+                let ret = match self.tables[self.roots[file]].names.get("main") {
+                    Some(Sym::Func { ret, .. }) => ret.clone(),
+                    _ => Ty::Unknown,
+                };
+                // `None` ou `Unknown` : erreur déjà signalée (MCF0111, type inconnu).
+                if let (Some(r), false) = (&f.ret, matches!(ret, Ty::Void | Ty::Unknown)) {
+                    self.report(
+                        Diagnostic::new(
+                            &codes::INVALID_ENTRY_POINT,
+                            r.span,
+                            "le point d'entrée `main` ne retourne rien",
+                        )
+                        .expected("Void")
+                        .received(ret.to_string()),
+                    );
+                }
+            }
+        }
+    }
+
+    // ================================================================ passe 6 : corps
 
     fn check_items(&mut self, items: &[Item], table: usize) {
         for item in items {

@@ -1,0 +1,4 @@
+// Fichier de bibliothèque : pas de `main`.
+func greet(_name: String): Void {
+    print("Bonjour " + _name);
+}
