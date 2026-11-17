@@ -1,0 +1,8 @@
+// attendu: MCF0114
+struct A {
+    v: Int;
+
+    func f(): Void {
+        self = A { v: 1 };
+    }
+}

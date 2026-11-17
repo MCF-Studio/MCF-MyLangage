@@ -1,0 +1,8 @@
+// attendu: MCF0220
+struct Counter {
+    value: Int;
+
+    func reset(): Void {
+        self.value = "zéro";
+    }
+}

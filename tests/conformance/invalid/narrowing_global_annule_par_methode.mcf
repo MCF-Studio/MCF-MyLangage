@@ -1,0 +1,18 @@
+// attendu: MCF0221
+level: Bool, Int = 1;
+
+struct Game {
+    score: Int;
+
+    func reset(): Void {
+        level = false;
+    }
+}
+
+func main(): Void {
+    _g: Game = Game { score: 0 };
+    if (level is Int) then {
+        _g.reset();
+        print(level + 1);
+    }
+}

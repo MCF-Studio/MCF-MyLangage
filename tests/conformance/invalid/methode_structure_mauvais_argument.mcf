@@ -1,0 +1,14 @@
+// attendu: MCF0220, MCF0210
+struct Counter {
+    value: Int;
+
+    func add(_n: Int): Void {
+        self.value = self.value + _n;
+    }
+}
+
+func main(): Void {
+    _c: Counter = Counter { value: 0 };
+    _c.add("un");
+    _c.add(1, 2);
+}

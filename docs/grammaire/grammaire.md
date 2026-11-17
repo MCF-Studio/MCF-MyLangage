@@ -21,7 +21,7 @@ Param           = LocalIdent ":" TypeDecl ;
 
 ScopeDecl       = "scope" Ident "{" { Item } "}" ;
 ImportDecl      = "import" Path ";" ;
-StructDecl      = "struct" Ident "{" { Ident ":" TypeDecl ";" } "}" ;
+StructDecl      = "struct" Ident "{" { Ident ":" TypeDecl ";" | FuncDecl } "}" ;
 EnumDecl        = "enum" Ident "{" [ Ident { "," Ident } [ "," ] ] "}" ;
 EventDecl       = "event" Path "(" [ Params ] ")" ";" ;
 OnHandler       = "on" Path "(" [ LocalIdent { "," LocalIdent } ] ")" Block ;

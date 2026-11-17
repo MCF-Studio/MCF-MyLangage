@@ -33,6 +33,7 @@ pub enum TokenKind {
     Break,
     Continue,
     Is,
+    SelfKw,
     True,
     False,
 
@@ -104,6 +105,7 @@ impl TokenKind {
             Break => "break",
             Continue => "continue",
             Is => "is",
+            SelfKw => "self",
             True => "true",
             False => "false",
             LBrace => "{",
@@ -157,6 +159,7 @@ pub const KEYWORDS: &[(&str, TokenKind)] = &[
     ("break", TokenKind::Break),
     ("continue", TokenKind::Continue),
     ("is", TokenKind::Is),
+    ("self", TokenKind::SelfKw),
     ("true", TokenKind::True),
     ("false", TokenKind::False),
 ];

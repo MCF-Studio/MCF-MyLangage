@@ -1,0 +1,14 @@
+// erreur: MCF0401
+struct Ratio {
+    num: Int;
+    den: Int;
+
+    func value(): Int {
+        return self.num / self.den;
+    }
+}
+
+func main(): Void {
+    _r: Ratio = Ratio { num: 1, den: 0 };
+    print(_r.value());
+}

@@ -133,7 +133,12 @@ struct Program<'a> {
     /// Ordre d'initialisation : fichiers dans l'ordre, déclarations dans l'ordre.
     types: TypeNames,
     handlers: HashMap<String, Vec<Handler<'a>>>,
+    /// Méthodes des structures : (structure, nom) → fonction.
+    methods: HashMap<(usize, String), usize>,
 }
+
+/// Nom de la locale qui porte le receveur d'une méthode (`self` est un mot-clé).
+const SELF_LOCAL: &str = "self";
 
 fn path_text(path: &Path) -> String {
     path.segments
@@ -156,6 +161,7 @@ impl<'a> Program<'a> {
                 enums: Vec::new(),
             },
             handlers: HashMap::new(),
+            methods: HashMap::new(),
         };
         for (file, module) in modules.iter().enumerate() {
             let root = p.new_table(None);
@@ -210,11 +216,22 @@ impl<'a> Program<'a> {
                     (&s.name.name, Entity::Scope(child))
                 }
                 Item::Struct(s) => {
+                    let id = self.types.structs.len();
                     self.types.structs.push(StructInfo {
                         name: s.name.name.clone(),
                         fields: s.fields.iter().map(|f| f.name.name.clone()).collect(),
                     });
-                    (&s.name.name, Entity::Struct(self.types.structs.len() - 1))
+                    for m in &s.methods {
+                        self.funcs.push(FuncInfo {
+                            name: format!("{prefix}{}.{}", s.name.name, m.name.name),
+                            decl: m,
+                            table,
+                            file,
+                        });
+                        self.methods
+                            .insert((id, m.name.name.clone()), self.funcs.len() - 1);
+                    }
+                    (&s.name.name, Entity::Struct(id))
                 }
                 Item::Enum(e) => {
                     self.types.enums.push(EnumInfo {
@@ -340,7 +357,7 @@ impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
             self.globals[slot] = value;
             self.calls.pop();
         }
-        self.call_func(main, Vec::new(), None)?;
+        self.call_func(main, None, Vec::new(), None)?;
         Ok(())
     }
 
@@ -471,9 +488,11 @@ impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
 
     // ---------------------------------------------------------------- appels
 
+    /// Appelle une fonction, ou une méthode quand `receiver` est donné (il devient `self`).
     fn call_func(
         &mut self,
         id: usize,
+        receiver: Option<Value>,
         args: Vec<Value>,
         called_at: Option<(usize, Span)>,
     ) -> Res<Value> {
@@ -490,13 +509,16 @@ impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
                 .suggestion("vérifier la condition d'arrêt de la fonction récursive"),
             ));
         }
-        let locals: Locals = f
+        let mut locals: Locals = f
             .decl
             .params
             .iter()
             .zip(args)
             .map(|(param, v)| (param.name.name.clone(), Some(v)))
             .collect();
+        if let Some(recv) = receiver {
+            locals.insert(SELF_LOCAL.to_string(), Some(recv));
+        }
         self.calls.push(CallFrame {
             name: f.name.clone(),
             file: f.file,
@@ -913,6 +935,11 @@ impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
             ExprKind::Str { value } => Ok(Value::Str(value.as_str().into())),
             ExprKind::Bool { value } => Ok(Value::Bool(*value)),
             ExprKind::Paren { expr } => self.eval(expr),
+            ExprKind::SelfRef => self
+                .find_local(SELF_LOCAL)
+                .cloned()
+                .flatten()
+                .ok_or_else(|| self.internal(expr.span, "`self` hors d'une méthode")),
             ExprKind::Name { ident } => {
                 if let Some(local) = self.find_local(&ident.name) {
                     return local
@@ -1017,16 +1044,24 @@ impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
             ExprKind::Call { callee, args } => {
                 let target = self.entity_of(callee);
                 if let (None, ExprKind::Member { object, field }) = (target, &callee.kind) {
-                    // Méthode native : le receveur est évalué avant les arguments.
+                    // Méthode : le receveur est évalué avant les arguments.
                     let recv = self.eval(object)?;
                     let values = args.iter().map(|a| self.eval(a)).collect::<Res<Vec<_>>>()?;
+                    if let Value::Struct(s) = &recv {
+                        let key = (s.borrow().id, field.name.clone());
+                        let Some(&id) = self.p.methods.get(&key) else {
+                            return Err(self.internal(field.span, "méthode de structure inconnue"));
+                        };
+                        let called_at = Some((self.frame().file, expr.span));
+                        return self.call_func(id, Some(recv), values, called_at);
+                    }
                     let spans: Vec<Span> = args.iter().map(|a| a.span).collect();
                     return self.call_method(recv, field, values, &spans);
                 }
                 let values = args.iter().map(|a| self.eval(a)).collect::<Res<Vec<_>>>()?;
                 let called_at = Some((self.frame().file, expr.span));
                 match target {
-                    Some(Entity::Func(id)) => self.call_func(id, values, called_at),
+                    Some(Entity::Func(id)) => self.call_func(id, None, values, called_at),
                     Some(Entity::Builtin(b)) => {
                         let spans: Vec<Span> = args.iter().map(|a| a.span).collect();
                         self.call_builtin(b, values, &spans)

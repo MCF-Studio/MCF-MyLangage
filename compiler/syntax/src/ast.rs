@@ -99,6 +99,8 @@ pub struct Field {
 pub struct StructDecl {
     pub name: Ident,
     pub fields: Vec<Field>,
+    /// Méthodes déclarées dans le corps : `func nom(...): Type { ... }` (receveur `self`).
+    pub methods: Vec<FuncDecl>,
     pub span: Span,
 }
 
@@ -256,6 +258,8 @@ pub enum ExprKind {
     Name {
         ident: Ident,
     },
+    /// `self` : la structure qui reçoit l'appel, dans une méthode.
+    SelfRef,
     Array {
         items: Vec<Expr>,
     },

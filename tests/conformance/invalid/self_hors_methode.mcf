@@ -1,0 +1,4 @@
+// attendu: MCF0247
+func main(): Void {
+    print(self);
+}

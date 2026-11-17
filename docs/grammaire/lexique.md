@@ -26,7 +26,7 @@ Implémenté par `compiler/syntax/src/lexer.rs`. Toute modification doit être r
 
 ## Mots-clés
 
-`func scope struct enum import event on emit if then else while for foreach in do return break continue is true false`
+`func scope struct enum import event on emit if then else while for foreach in do return break continue is self true false`
 
 ## Mots réservés
 

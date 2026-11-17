@@ -8,7 +8,7 @@ Ordre tiré du cahier des charges 1.2 (§22). Une phase n'est terminée que lors
 | 2 | Lexer, parser, AST, `mcf check` (syntaxe) | ✅ première version |
 | 3 | Types, variables, scopes (résolution des symboles) | ✅ résolution des noms, scopes, imports |
 | 4 | DualType, type narrowing, analyse sémantique | ✅ vérification des types, narrowing sûr |
-| 5 | Fonctions et structures | ✅ structures, énumérations (méthodes à venir) |
+| 5 | Fonctions et structures | ✅ structures (avec méthodes), énumérations |
 | 6 | Conditions et boucles (exécution) | ✅ interpréteur, `mcf run`, point d'entrée `main` |
 | 7 | Imports et résolution des symboles | 🟡 imports de base faits (alias à venir) |
 | 8 | Événements et asynchrone | ⬜ |

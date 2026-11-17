@@ -96,6 +96,7 @@ codes! {
     RECURSIVE_STRUCT = "MCF0244", Type, Error, "Structure qui se contient elle-même : taille infinie.";
     NOT_A_TYPE = "MCF0245", Type, Error, "Ce nom ne désigne pas un type.";
     NOT_A_STRUCT = "MCF0246", Type, Error, "Littéral `Nom { ... }` sur autre chose qu'une structure.";
+    SELF_OUTSIDE_METHOD = "MCF0247", Semantic, Error, "`self` utilisé hors d'une méthode de structure.";
 
     INVALID_ENTRY_POINT = "MCF0250", Semantic, Error, "`main` à la racine d'un fichier doit être `func main(): Void` sans paramètre.";
     DUPLICATE_ENTRY_POINT = "MCF0251", Semantic, Error, "Plusieurs points d'entrée `main` dans le même projet.";

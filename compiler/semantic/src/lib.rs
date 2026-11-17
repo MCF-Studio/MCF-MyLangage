@@ -94,7 +94,20 @@ struct StructInfo {
     name_span: Span,
     file: usize,
     fields: Vec<(String, Ty)>,
+    methods: Vec<MethodInfo>,
 }
+
+/// Méthode d'une structure : appelée sur une valeur, `self` désigne cette valeur.
+#[derive(Clone)]
+struct MethodInfo {
+    name: String,
+    params: Vec<Ty>,
+    ret: Ty,
+}
+
+/// Nom interne de la locale qui porte le receveur d'une méthode. `self` est un mot-clé :
+/// aucun identifiant écrit par l'utilisateur ne peut le masquer.
+const SELF_LOCAL: &str = "self";
 
 struct EnumInfo {
     name: String,
@@ -113,10 +126,12 @@ struct Frame {
 enum Resolved {
     Local,
     Sym(Sym),
-    /// Méthode native d'une valeur (`_xs.push`) : signature déjà adaptée au type du receveur.
+    /// Méthode d'une valeur (`_xs.push`, `_user.rename`) : signature déjà adaptée au
+    /// type du receveur. `user` : méthode écrite en MCF, qui peut modifier des globales.
     Method {
         params: Vec<Ty>,
         ret: Ty,
+        user: bool,
     },
     Opaque,
 }
@@ -483,6 +498,7 @@ impl Analyzer {
                         name_span: s.name.span,
                         file: self.file,
                         fields: Vec::new(),
+                        methods: Vec::new(),
                     });
                     self.declare(table, &s.name, Sym::Struct { id });
                 }
@@ -641,11 +657,50 @@ impl Analyzer {
                             fields.push((f.name.name.clone(), ty));
                         }
                     }
+                    let mut methods: Vec<MethodInfo> = Vec::new();
+                    for m in &s.methods {
+                        let params = m
+                            .params
+                            .iter()
+                            .map(|p| self.type_decl(&p.ty, table, false, true))
+                            .collect();
+                        let ret = match &m.ret {
+                            Some(r) => self.type_decl(r, table, true, true),
+                            None => Ty::Unknown,
+                        };
+                        let clash = if fields.iter().any(|(n, _)| *n == m.name.name) {
+                            Some("un champ porte déjà ce nom")
+                        } else if methods.iter().any(|x| x.name == m.name.name) {
+                            Some("la méthode est déclarée deux fois")
+                        } else {
+                            None
+                        };
+                        if let Some(why) = clash {
+                            self.report(
+                                Diagnostic::new(
+                                    &codes::DUPLICATE_FIELD,
+                                    m.name.span,
+                                    format!("`{}` : {why}", m.name.name),
+                                )
+                                .suggestion(
+                                    "les champs et les méthodes d'une structure ont des noms distincts",
+                                ),
+                            );
+                            self.rejected.insert((self.file, m.name.span.start));
+                        } else {
+                            methods.push(MethodInfo {
+                                name: m.name.name.clone(),
+                                params,
+                                ret,
+                            });
+                        }
+                    }
                     if !self.is_rejected(&s.name) {
                         if let Some(Sym::Struct { id }) = self.tables[table].names.get(&s.name.name)
                         {
                             let id = *id;
                             self.structs[id].fields = fields;
+                            self.structs[id].methods = methods;
                         }
                     }
                 }
@@ -805,32 +860,11 @@ impl Analyzer {
                     if self.is_rejected(&f.name) {
                         continue;
                     }
-                    let (params, ret) = match self.tables[table].names.get(&f.name.name) {
-                        Some(Sym::Func { params, ret }) => (params.clone(), ret.clone()),
-                        _ => continue,
-                    };
-                    self.enter_body(ret.clone());
-                    for (p, ty) in f.params.iter().zip(params) {
-                        self.declare_local(&p.name, ty);
+                    if let Some(Sym::Func { params, ret }) =
+                        self.tables[table].names.get(&f.name.name).cloned()
+                    {
+                        self.check_func_body(f, &params, ret, None, table);
                     }
-                    self.check_block_in_current_frame(&f.body, table);
-                    if !matches!(ret, Ty::Void | Ty::Unknown) && !always_returns(&f.body) {
-                        let end = Span::new(f.body.span.end.saturating_sub(1), f.body.span.end);
-                        self.report(
-                            Diagnostic::new(
-                                &codes::MISSING_RETURN,
-                                end,
-                                format!(
-                                    "la fonction `{}` doit retourner `{ret}` sur tous les chemins",
-                                    f.name.name
-                                ),
-                            )
-                            .suggestion(
-                                "ajouter un `return` à la fin, ou une branche `else` qui retourne",
-                            ),
-                        );
-                    }
-                    self.leave_body();
                 }
                 Item::Scope(s) => {
                     if self.is_rejected(&s.name) {
@@ -860,9 +894,73 @@ impl Analyzer {
                     self.check_block_in_current_frame(&h.body, table);
                     self.leave_body();
                 }
-                Item::Struct(_) | Item::Enum(_) | Item::Import(_) => {}
+                Item::Struct(s) => {
+                    if self.is_rejected(&s.name) {
+                        continue;
+                    }
+                    let Some(Sym::Struct { id }) = self.tables[table].names.get(&s.name.name)
+                    else {
+                        continue;
+                    };
+                    let id = *id;
+                    let receiver = Ty::Struct {
+                        id,
+                        name: s.name.name.clone(),
+                    };
+                    for m in &s.methods {
+                        if self.is_rejected(&m.name) {
+                            continue;
+                        }
+                        let Some(info) = self.structs[id]
+                            .methods
+                            .iter()
+                            .find(|x| x.name == m.name.name)
+                        else {
+                            continue;
+                        };
+                        let (params, ret) = (info.params.clone(), info.ret.clone());
+                        self.check_func_body(m, &params, ret, Some(receiver.clone()), table);
+                    }
+                }
+                Item::Enum(_) | Item::Import(_) => {}
             }
         }
+    }
+
+    /// Corps d'une fonction ou d'une méthode (`receiver` : type de `self`).
+    fn check_func_body(
+        &mut self,
+        f: &FuncDecl,
+        params: &[Ty],
+        ret: Ty,
+        receiver: Option<Ty>,
+        table: usize,
+    ) {
+        self.enter_body(ret.clone());
+        if let (Some(ty), Some(frame)) = (receiver, self.frames.last_mut()) {
+            frame
+                .locals
+                .insert(SELF_LOCAL.to_string(), (f.name.span, ty));
+        }
+        for (p, ty) in f.params.iter().zip(params) {
+            self.declare_local(&p.name, ty.clone());
+        }
+        self.check_block_in_current_frame(&f.body, table);
+        if !matches!(ret, Ty::Void | Ty::Unknown) && !always_returns(&f.body) {
+            let end = Span::new(f.body.span.end.saturating_sub(1), f.body.span.end);
+            self.report(
+                Diagnostic::new(
+                    &codes::MISSING_RETURN,
+                    end,
+                    format!(
+                        "la fonction `{}` doit retourner `{ret}` sur tous les chemins",
+                        f.name.name
+                    ),
+                )
+                .suggestion("ajouter un `return` à la fin, ou une branche `else` qui retourne"),
+            );
+        }
+        self.leave_body();
     }
 
     fn enter_body(&mut self, ret: Ty) {
@@ -1540,6 +1638,34 @@ impl Analyzer {
                     Typed::value(Ty::Unknown)
                 }
             },
+            ExprKind::SelfRef => {
+                let found = self
+                    .frames
+                    .iter()
+                    .rev()
+                    .find_map(|f| f.locals.get(SELF_LOCAL))
+                    .map(|(_, ty)| ty.clone());
+                match found {
+                    Some(ty) => Typed {
+                        res: Resolved::Opaque,
+                        declared: ty.clone(),
+                        ty,
+                    },
+                    None => {
+                        self.report(
+                            Diagnostic::new(
+                                &codes::SELF_OUTSIDE_METHOD,
+                                expr.span,
+                                "`self` n'existe que dans une méthode de structure",
+                            )
+                            .suggestion(
+                                "déclarer la fonction dans le corps d'un `struct`, ou passer la valeur en paramètre",
+                            ),
+                        );
+                        Typed::value(Ty::Unknown)
+                    }
+                }
+            }
             ExprKind::Member { object, field } => self.check_member(object, field, table),
             ExprKind::StructLit { path, fields } => {
                 self.check_struct_lit(path, fields, expr.span, table)
@@ -1714,10 +1840,23 @@ impl Analyzer {
                         declared: ty.clone(),
                     },
                     None => {
-                        let list = self.structs[*id]
+                        let info = &self.structs[*id];
+                        if let Some(m) = info.methods.iter().find(|m| m.name == field.name) {
+                            return Typed {
+                                res: Resolved::Method {
+                                    params: m.params.clone(),
+                                    ret: m.ret.clone(),
+                                    user: true,
+                                },
+                                ty: Ty::Unknown,
+                                declared: Ty::Unknown,
+                            };
+                        }
+                        let list = info
                             .fields
                             .iter()
-                            .map(|(n, _)| n.as_str())
+                            .map(|(n, _)| n.clone())
+                            .chain(info.methods.iter().map(|m| format!("{}()", m.name)))
                             .collect::<Vec<_>>()
                             .join(", ");
                         let name = name.clone();
@@ -1738,7 +1877,11 @@ impl Analyzer {
                 let other = other.clone();
                 if let Some((params, ret)) = types::native_method(&other, &field.name) {
                     return Typed {
-                        res: Resolved::Method { params, ret },
+                        res: Resolved::Method {
+                            params,
+                            ret,
+                            user: false,
+                        },
                         ty: Ty::Unknown,
                         declared: Ty::Unknown,
                     };
@@ -1880,10 +2023,14 @@ impl Analyzer {
                 self.forget_global_narrowings();
                 ret
             }
-            Resolved::Method { params, ret } => {
+            Resolved::Method { params, ret, user } => {
                 count_error(self, params.len());
                 for ((t, span), p) in arg_tys.iter().zip(&params) {
                     self.expect_assignable(t, p, *span);
+                }
+                if user {
+                    // Une méthode MCF peut modifier des globales, comme une fonction.
+                    self.forget_global_narrowings();
                 }
                 ret
             }

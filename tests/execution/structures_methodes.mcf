@@ -1,0 +1,64 @@
+// Méthodes de structures : lecture, modification via self, appels entre méthodes
+struct Account {
+    owner: String;
+    balance: Int;
+    history: Array<Int>;
+
+    func deposit(_amount: Int): Void {
+        self.balance = self.balance + _amount;
+        self.history.push(_amount);
+    }
+
+    func withdraw(_amount: Int): Bool {
+        if (_amount > self.balance) then {
+            return false;
+        }
+        self.deposit(-_amount);
+        return true;
+    }
+
+    func describe(): String {
+        return self.owner + " : " + self.balance;
+    }
+}
+
+scope Bank {
+    struct Counter {
+        value: Int;
+
+        func next(): Int {
+            self.value = self.value + 1;
+            return self.value;
+        }
+    }
+}
+
+main_account: Account = Account { owner: "Alex", balance: 0, history: [] };
+
+func reset(_a: Account): Void {
+    _a.balance = 0;
+}
+
+func main(): Void {
+    main_account.deposit(100);
+    print(main_account.withdraw(30));
+    print(main_account.withdraw(500));
+    print(main_account.describe());
+    print(main_account.history);
+
+    _alias: Account = main_account;
+    _alias.deposit(5);
+    print(main_account.balance);
+
+    _copy: Account = duplicate(main_account);
+    _copy.deposit(1000);
+    print(main_account.balance);
+    print(_copy.balance);
+
+    reset(main_account);
+    print(main_account.describe());
+
+    _c: Bank.Counter = Bank.Counter { value: 0 };
+    _c.next();
+    print(_c.next());
+}

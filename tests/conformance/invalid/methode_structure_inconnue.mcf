@@ -1,0 +1,13 @@
+// attendu: MCF0241
+struct User {
+    name: String;
+
+    func greet(): String {
+        return "Bonjour " + self.name;
+    }
+}
+
+func main(): Void {
+    _u: User = User { name: "Alex" };
+    print(_u.hello());
+}

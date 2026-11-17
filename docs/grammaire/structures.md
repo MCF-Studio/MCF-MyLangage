@@ -27,6 +27,39 @@ func rename(_user: User, _name: String): Void {
 - Une structure ne se crée pas comme une fonction : `User(1)` → MCF0231.
 - Une structure ou une énumération ne peut pas porter le nom d'un type natif (MCF0201).
 
+## Méthodes
+
+Une structure peut déclarer des fonctions dans son corps, après ou entre ses champs. Elles s'appellent sur une valeur : `valeur.methode(...)`. Dans le corps, **`self`** désigne la valeur qui reçoit l'appel.
+
+```rust
+struct Account {
+    owner: String;
+    balance: Int;
+
+    func deposit(_amount: Int): Void {
+        self.balance = self.balance + _amount;
+    }
+
+    func describe(): String {
+        return self.owner + " : " + self.balance;
+    }
+}
+
+func main(): Void {
+    _a: Account = Account { owner: "Alex", balance: 0 };
+    _a.deposit(100);
+    print(_a.describe());     // Alex : 100
+}
+```
+
+- `self` est un mot-clé ; il n'est pas écrit dans les paramètres. Hors d'une méthode → MCF0247. On ne peut pas lui affecter une autre valeur (`self = ...` → MCF0114), seulement modifier ses champs.
+- Les champs s'atteignent toujours par `self.champ` : pas d'accès implicite, on voit d'où vient chaque nom.
+- Une structure étant partagée (D30), une méthode qui modifie `self` modifie la valeur de l'appelant. Pour travailler sur une copie : `duplicate(valeur).methode()`.
+- Une méthode et un champ d'une même structure ne peuvent pas porter le même nom, ni deux méthodes entre elles (MCF0242).
+- Nom inconnu → MCF0241 (la liste des champs et méthodes est proposée) ; méthode utilisée sans l'appeler → MCF0232 ; mauvais arguments → MCF0210 / MCF0220.
+- Une méthode suit les règles d'une fonction : type de retour obligatoire, `return` sur tous les chemins (MCF0226). Comme une fonction, son appel annule le narrowing des globales (D24).
+- Dans une erreur d'exécution, la trace la nomme `Structure.methode`.
+
 ## Énumérations
 
 ```rust
@@ -46,4 +79,4 @@ Une structure rangée dans un scope ou un autre fichier s'utilise comme le reste
 
 ## Pas encore
 
-Méthodes associées aux structures, variantes d'énumération avec données, valeurs par défaut, structures génériques, `match` : à arbitrer.
+Méthodes statiques (sans `self`, ex. `User.create(...)`), méthodes d'énumération, variantes d'énumération avec données, valeurs par défaut, structures génériques, `match` : à arbitrer.

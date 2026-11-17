@@ -1,0 +1,25 @@
+struct Point {
+    x: Int;
+    y: Int;
+
+    func add(_other: Point): Point {
+        return Point { x: self.x + _other.x, y: self.y + _other.y };
+    }
+
+    func moveBy(_dx: Int): Void {
+        self.x = self.x + _dx;
+    }
+
+    func isOrigin(): Bool {
+        return self.x == 0 && self.y == 0;
+    }
+}
+
+func main(): Void {
+    _p: Point = Point { x: 1, y: 2 };
+    _q: Point = _p.add(Point { x: 3, y: 4 });
+    _q.moveBy(1);
+    if (_q.isOrigin()) then {
+        print("origine");
+    }
+}

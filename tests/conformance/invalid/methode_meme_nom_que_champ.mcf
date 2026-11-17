@@ -1,0 +1,8 @@
+// attendu: MCF0242
+struct User {
+    name: String;
+
+    func name(): String {
+        return "x";
+    }
+}

@@ -360,13 +360,18 @@ impl Parser<'_> {
         })
     }
 
-    /// `struct Nom { champ: Type; ... }`
+    /// `struct Nom { champ: Type; ... func methode(...): Type { ... } }`
     fn struct_decl(&mut self) -> Option<StructDecl> {
         let start = self.bump().span;
         let name = self.global_ident()?;
         self.expect(K::LBrace).then_some(())?;
         let mut fields = Vec::new();
+        let mut methods = Vec::new();
         while !matches!(self.peek(), K::RBrace | K::Eof) {
+            if self.at(&K::Func) {
+                methods.push(self.func()?);
+                continue;
+            }
             if self.at(&K::LocalIdent) {
                 let span = self.span();
                 let text = self.text(span).to_string();
@@ -379,7 +384,10 @@ impl Parser<'_> {
                     .suggestion(format!("`{}`", text.trim_start_matches('_'))),
                 );
             } else if !self.at(&K::Ident) {
-                self.unexpected(&codes::EXPECTED_IDENTIFIER, "un champ `nom: Type;`");
+                self.unexpected(
+                    &codes::EXPECTED_IDENTIFIER,
+                    "un champ `nom: Type;` ou une méthode `func`",
+                );
                 return None;
             }
             let fname = self.ident()?;
@@ -399,6 +407,7 @@ impl Parser<'_> {
             span: start.to(end),
             name,
             fields,
+            methods,
         })
     }
 
@@ -628,6 +637,7 @@ impl Parser<'_> {
                 | K::Float
                 | K::Str(_)
                 | K::True
+                | K::SelfKw
                 | K::False
                 | K::LParen
                 | K::LBracket
@@ -1156,6 +1166,7 @@ impl Parser<'_> {
             },
             K::Str(value) => ExprKind::Str { value },
             K::True => ExprKind::Bool { value: true },
+            K::SelfKw => ExprKind::SelfRef,
             K::False => ExprKind::Bool { value: false },
             K::Ident | K::LocalIdent => ExprKind::Name {
                 ident: Ident {

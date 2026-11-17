@@ -1,0 +1,8 @@
+// attendu: MCF0226
+struct Counter {
+    value: Int;
+
+    func double(): Int {
+        self.value = self.value * 2;
+    }
+}
