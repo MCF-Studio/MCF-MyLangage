@@ -58,8 +58,16 @@ fn run_entry(entry: &Path) -> Result<(), String> {
 
     let parsed: Vec<_> = srcs.iter().map(|s| mcf_syntax::parse(&s.text)).collect();
     let modules: Vec<_> = parsed.iter().map(|p| &p.module).collect();
+    // Noms courts : `meta.source` affiche « fichier.mcf:ligne » quel que soit le dossier.
+    let files: Vec<_> = srcs
+        .iter()
+        .map(|s| {
+            let short = Path::new(&s.name).file_name().unwrap().to_string_lossy();
+            mcf_diagnostics::SourceFile::new(short.to_string(), s.text.clone())
+        })
+        .collect();
     let mut out = Vec::new();
-    let result = mcf_runtime::run(&modules, &mut out);
+    let result = mcf_runtime::run(&modules, &files, &mut out);
     let out = String::from_utf8(out).unwrap();
 
     if out != expected_out {

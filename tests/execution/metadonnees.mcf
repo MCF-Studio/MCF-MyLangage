@@ -1,0 +1,27 @@
+// Métadonnées d'événements (D46) : déclarées avec un défaut, précisées à l'emit,
+// lues par `meta` dans les gestionnaires ; `meta.source` = fichier:ligne de l'emit.
+enum Priority { Low, High }
+
+event Purchase(_item: String, _price: Int) meta {
+    channel: String = "jeu";
+    priority: Priority = Priority.Low;
+    label: String = _item + " à " + _price;
+}
+
+event Ping();
+
+on Purchase(_item, _price) {
+    print(meta.label + " via " + meta.channel);
+    print(meta.priority);
+}
+
+on Ping() {
+    print(meta.source);
+}
+
+func main(): Void {
+    emit Purchase("épée", 12);
+    emit Purchase("bouclier", 8) meta { channel: "web", priority: Priority.High };
+    emit Ping();
+    start emit Purchase("arc", 5) meta { label: "promo" };
+}

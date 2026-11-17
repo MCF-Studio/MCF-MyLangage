@@ -1,0 +1,8 @@
+// attendu: MCF0220
+event Purchase(_item: String) meta {
+    priority: Int = 0;
+}
+
+func f(): Void {
+    emit Purchase("épée") meta { priority: "haute" };
+}

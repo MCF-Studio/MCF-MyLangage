@@ -1,0 +1,8 @@
+// attendu: MCF0242, MCF0241
+event Purchase(_item: String) meta {
+    source: String = "moi";
+}
+
+func f(): Void {
+    emit Purchase("épée") meta { source: "ici" };
+}

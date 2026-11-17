@@ -63,3 +63,5 @@ Pas encore de littéral `Char` ni d'exposant (`1e3`) : à arbitrer.
 ## Symboles ajoutés
 
 `=>` : abonnement `on Evenement => fonction` (D45).
+
+`meta` : mot **contextuel** (pas réservé). Après les paramètres d'un `event` ou les arguments d'un `emit`, `meta {` ouvre les métadonnées ; dans un gestionnaire `on`, `meta` désigne les métadonnées reçues (D46). Ailleurs, `meta` reste un nom ordinaire.

@@ -11,7 +11,7 @@ Ordre tiré du cahier des charges 1.2 (§22). Une phase n'est terminée que lors
 | 5 | Fonctions et structures | ✅ structures (avec méthodes), énumérations |
 | 6 | Conditions et boucles (exécution) | ✅ interpréteur, `mcf run`, point d'entrée `main` |
 | 7 | Imports et résolution des symboles | ✅ imports entre fichiers, alias (`as`) |
-| 8 | Événements et asynchrone | 🟡 tâches, `start emit`, abonnements (`on X => f`) faits ; métadonnées à venir |
+| 8 | Événements et asynchrone | ✅ tâches (`start`/`await`), `start emit`, abonnements (`on X => f`), métadonnées |
 | 9 | Configuration `.cfg` | ⬜ |
 | 10 | Interfaces `.uimcf` | ⬜ |
 | 11 | Backend web | ⬜ |

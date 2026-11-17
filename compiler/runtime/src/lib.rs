@@ -22,7 +22,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::Scope;
 use std::time::{Duration, Instant};
 
-use mcf_diagnostics::{codes, Code, Diagnostic, Span};
+use mcf_diagnostics::{codes, Code, Diagnostic, SourceFile, Span};
 use mcf_syntax::ast::*;
 use value::{display, EnumInfo, StructInfo, TypeNames};
 
@@ -64,13 +64,18 @@ type Res<T> = Result<T, Stop>;
 
 /// Exécute un projet vérifié : initialise les globales (fichiers dans l'ordre donné, puis
 /// ordre de déclaration), appelle `func main(): Void`, puis attend la fin de toutes les tâches
-/// lancées par `start`. Ce que `print` affiche va dans `out`.
-pub fn run<W: Write + Send>(modules: &[&Module], out: &mut W) -> Result<(), Box<RuntimeError>> {
+/// lancées par `start`. Ce que `print` affiche va dans `out`. `files` (même ordre que
+/// `modules`) sert à `meta.source` (« fichier:ligne » d'un `emit`).
+pub fn run<W: Write + Send>(
+    modules: &[&Module],
+    files: &[SourceFile],
+    out: &mut W,
+) -> Result<(), Box<RuntimeError>> {
     std::thread::scope(|s| {
         std::thread::Builder::new()
             .name("mcf-run".into())
             .stack_size(STACK_SIZE)
-            .spawn_scoped(s, || run_here(modules, out))
+            .spawn_scoped(s, || run_here(modules, files, out))
             .map_err(|e| failure(&format!("impossible de démarrer l'exécution : {e}")))?
             .join()
             .unwrap_or_else(|_| Err(failure("l'interpréteur s'est arrêté de façon inattendue")))
@@ -85,8 +90,12 @@ fn failure(message: &str) -> Box<RuntimeError> {
     })
 }
 
-fn run_here<W: Write + Send>(modules: &[&Module], out: &mut W) -> Result<(), Box<RuntimeError>> {
-    let program = Program::build(modules);
+fn run_here<W: Write + Send>(
+    modules: &[&Module],
+    files: &[SourceFile],
+    out: &mut W,
+) -> Result<(), Box<RuntimeError>> {
+    let program = Program::build(modules, files);
     let shared = Shared {
         world: Mutex::new(World {
             out,
@@ -148,6 +157,7 @@ enum Job {
         event: String,
         index: usize,
         args: Vec<Value>,
+        meta: Option<Value>,
     },
 }
 
@@ -334,7 +344,18 @@ struct Handler<'a> {
     file: usize,
 }
 
+/// Événement déclaré : de quoi calculer ses métadonnées à chaque `emit`.
+struct EventInfo<'a> {
+    decl: &'a EventDecl,
+    table: usize,
+    file: usize,
+    /// Structure `X.meta` dans `types.structs`.
+    meta: usize,
+}
+
 struct Program<'a> {
+    events: HashMap<String, EventInfo<'a>>,
+    files: &'a [SourceFile],
     tables: Vec<Table>,
     roots: Vec<usize>,
     /// Par fichier : nom importé → (table d'origine, nom).
@@ -351,6 +372,9 @@ struct Program<'a> {
 /// Nom de la locale qui porte le receveur d'une méthode (`self` est un mot-clé).
 const SELF_LOCAL: &str = "self";
 
+/// Nom de la locale qui porte les métadonnées dans un gestionnaire `on` (D46).
+const META_LOCAL: &str = "meta";
+
 fn path_text(path: &Path) -> String {
     path.segments
         .iter()
@@ -360,8 +384,10 @@ fn path_text(path: &Path) -> String {
 }
 
 impl<'a> Program<'a> {
-    fn build(modules: &[&'a Module]) -> Self {
+    fn build(modules: &[&'a Module], files: &'a [SourceFile]) -> Self {
         let mut p = Program {
+            events: HashMap::new(),
+            files,
             tables: Vec::new(),
             roots: Vec::new(),
             imports: vec![HashMap::new(); modules.len()],
@@ -461,7 +487,27 @@ impl<'a> Program<'a> {
                         });
                     continue;
                 }
-                Item::Event(_) | Item::Import(_) => continue,
+                Item::Event(e) => {
+                    let name = path_text(&e.name);
+                    let meta = self.types.structs.len();
+                    self.types.structs.push(StructInfo {
+                        name: format!("{name}.meta"),
+                        fields: e
+                            .meta
+                            .iter()
+                            .map(|m| m.name.name.clone())
+                            .chain(std::iter::once("source".to_string()))
+                            .collect(),
+                    });
+                    self.events.entry(name).or_insert(EventInfo {
+                        decl: e,
+                        table,
+                        file,
+                        meta,
+                    });
+                    continue;
+                }
+                Item::Import(_) => continue,
             };
             self.tables[table].names.insert(name.clone(), entity);
         }
@@ -743,8 +789,14 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     }
 
     fn run_job(&mut self, job: Job, called_at: (usize, Span)) -> Res<Value> {
-        if let Job::Handler { event, index, args } = job {
-            self.run_handler(&event, index, args, called_at)?;
+        if let Job::Handler {
+            event,
+            index,
+            args,
+            meta,
+        } = job
+        {
+            self.run_handler(&event, index, args, meta, called_at)?;
             return Ok(Value::Void);
         }
         if matches!(job, Job::Func { .. }) {
@@ -1048,8 +1100,13 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 args,
                 spans,
             } => self.call_method(receiver, &method, args, &spans),
-            Job::Handler { event, index, args } => {
-                self.run_handler(&event, index, args, called_at)?;
+            Job::Handler {
+                event,
+                index,
+                args,
+                meta,
+            } => {
+                self.run_handler(&event, index, args, meta, called_at)?;
                 Ok(Value::Void)
             }
         }
@@ -1064,21 +1121,30 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     /// Les gestionnaires `on` fixes passent d'abord, puis les abonnements `on X => f` actifs,
     /// dans l'ordre où ils ont été créés (D45). Un abonnement créé pendant l'`emit` attend le
     /// suivant ; un abonnement arrêté pendant l'`emit` n'est plus appelé.
-    fn emit(&mut self, event: &Path, args: Vec<Value>, background: bool, span: Span) -> Res<()> {
+    fn emit(
+        &mut self,
+        event: &Path,
+        args: Vec<Value>,
+        meta: &[FieldInit],
+        background: bool,
+        span: Span,
+    ) -> Res<()> {
         let p = self.p;
         let name = path_text(event);
         let count = p.handlers.get(&name).map_or(0, Vec::len);
         let called_at = (self.frame().file, span);
+        let meta = self.build_meta(&name, &args, meta, called_at)?;
         for index in 0..count {
             if background {
                 let job = Job::Handler {
                     event: name.clone(),
                     index,
                     args: args.clone(),
+                    meta: meta.clone(),
                 };
                 self.spawn(job, called_at)?;
             } else {
-                self.run_handler(&name, index, args.clone(), called_at)?;
+                self.run_handler(&name, index, args.clone(), meta.clone(), called_at)?;
             }
         }
         let subscribed: Vec<usize> = (0..self.w().listeners.len())
@@ -1104,12 +1170,66 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         Ok(())
     }
 
+    /// Métadonnées d'un `emit` (D46) : les valeurs données (calculées chez l'émetteur, dans
+    /// l'ordre écrit), puis les valeurs par défaut des autres (calculées dans le contexte de
+    /// la déclaration, données de l'événement lisibles), puis `source`.
+    fn build_meta(
+        &mut self,
+        event: &str,
+        args: &[Value],
+        inits: &[FieldInit],
+        called_at: (usize, Span),
+    ) -> Res<Option<Value>> {
+        let p = self.p;
+        let Some(info) = p.events.get(event) else {
+            return Ok(None);
+        };
+        let mut given = Vec::new();
+        for f in inits {
+            given.push((f.name.name.as_str(), self.eval(&f.value)?));
+        }
+        let locals: Locals = info
+            .decl
+            .params
+            .iter()
+            .zip(args.iter().cloned())
+            .map(|(param, v)| (param.name.name.clone(), Some(v)))
+            .collect();
+        self.calls.push(CallFrame {
+            name: format!("métadonnées de {event}"),
+            file: info.file,
+            table: info.table,
+            called_at: Some(called_at),
+            blocks: vec![locals],
+        });
+        let mut fields = Vec::new();
+        for m in &info.decl.meta {
+            match given.iter().position(|(n, _)| *n == m.name.name) {
+                Some(i) => fields.push(given.swap_remove(i).1),
+                None => fields.push(self.eval(&m.default)?),
+            }
+        }
+        self.calls.pop();
+        let source = match p.files.get(called_at.0) {
+            Some(f) => format!("{}:{}", f.name, f.location(called_at.1.start).line),
+            None => "?".to_string(),
+        };
+        fields.push(Value::Str(source.into()));
+        Ok(Some(Value::Struct(std::sync::Arc::new(
+            value::ValueCell::new(StructValue {
+                id: info.meta,
+                fields,
+            }),
+        ))))
+    }
+
     /// Exécute le gestionnaire `on` n° `index` de l'événement `event`.
     fn run_handler(
         &mut self,
         event: &str,
         index: usize,
         args: Vec<Value>,
+        meta: Option<Value>,
         called_at: (usize, Span),
     ) -> Res<()> {
         let p = self.p;
@@ -1123,13 +1243,16 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 format!("trop d'événements imbriqués : plus de {MAX_CALL_DEPTH} appels"),
             ));
         }
-        let locals: Locals = h
+        let mut locals: Locals = h
             .decl
             .bindings
             .iter()
             .zip(args)
             .map(|(b, v)| (b.name.clone(), Some(v)))
             .collect();
+        if let Some(m) = meta {
+            locals.insert(META_LOCAL.to_string(), Some(m));
+        }
         self.calls.push(CallFrame {
             name: format!("on {event}"),
             file: h.file,
@@ -1365,11 +1488,12 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             Stmt::Emit {
                 event,
                 args,
+                meta,
                 background,
                 span,
             } => {
                 let values = args.iter().map(|a| self.eval(a)).collect::<Res<Vec<_>>>()?;
-                self.emit(event, values, *background, *span)?;
+                self.emit(event, values, meta, *background, *span)?;
             }
             Stmt::Expr { expr, .. } => {
                 self.eval(expr)?;

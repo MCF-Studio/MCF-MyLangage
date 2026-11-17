@@ -140,6 +140,17 @@ impl ImportDecl {
 pub struct EventDecl {
     pub name: Path,
     pub params: Vec<Param>,
+    /// `meta { champ: Type = défaut; }` (DECISIONS D46).
+    pub meta: Vec<MetaField>,
+    pub span: Span,
+}
+
+/// Métadonnée déclarée par un événement : toujours avec une valeur par défaut.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MetaField {
+    pub name: Ident,
+    pub ty: TypeDecl,
+    pub default: Expr,
     pub span: Span,
 }
 
@@ -201,6 +212,8 @@ pub enum Stmt {
     Emit {
         event: Path,
         args: Vec<Expr>,
+        /// `emit X(v) meta { champ: valeur };`
+        meta: Vec<FieldInit>,
         background: bool,
         span: Span,
     },

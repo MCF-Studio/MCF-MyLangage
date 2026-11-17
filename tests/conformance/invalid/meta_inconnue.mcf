@@ -1,0 +1,8 @@
+// attendu: MCF0241
+event Purchase(_item: String) meta {
+    channel: String = "jeu";
+}
+
+func f(): Void {
+    emit Purchase("épée") meta { chanel: "web" };
+}

@@ -243,7 +243,7 @@ fn run(opts: &Options) -> ExitCode {
 
     let parsed: Vec<_> = sources.iter().map(|s| mcf_syntax::parse(&s.text)).collect();
     let modules: Vec<_> = parsed.iter().map(|p| &p.module).collect();
-    let Err(err) = mcf_runtime::run(&modules, &mut std::io::stdout()) else {
+    let Err(err) = mcf_runtime::run(&modules, &files, &mut std::io::stdout()) else {
         return ExitCode::SUCCESS;
     };
     let d = &err.diagnostic;

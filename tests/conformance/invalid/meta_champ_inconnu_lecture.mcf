@@ -1,0 +1,6 @@
+// attendu: MCF0241
+event Purchase(_item: String);
+
+on Purchase(_item) {
+    print(meta.channel);
+}

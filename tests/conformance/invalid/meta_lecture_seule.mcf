@@ -1,0 +1,8 @@
+// attendu: MCF0212
+event Purchase(_item: String) meta {
+    channel: String = "jeu";
+}
+
+on Purchase(_item) {
+    meta.channel = "web";
+}

@@ -100,7 +100,14 @@ struct Table {
 
 struct EventInfo {
     params: Vec<Ty>,
+    /// Structure synthétique `X.meta` (champs déclarés + `source`), une fois les types connus.
+    meta: Option<usize>,
 }
+
+/// Métadonnée fournie automatiquement à chaque `emit` : « fichier:ligne » de l'émission.
+const META_SOURCE: &str = "source";
+/// Nom sous lequel un gestionnaire `on` lit les métadonnées.
+const META_LOCAL: &str = "meta";
 
 struct StructInfo {
     name: String,
@@ -565,6 +572,7 @@ impl Analyzer {
                     {
                         slot.insert(EventInfo {
                             params: vec![Ty::Unknown; e.params.len()],
+                            meta: None,
                         });
                     } else {
                         self.report(Diagnostic::new(
@@ -795,12 +803,136 @@ impl Analyzer {
                         .collect();
                     let last = &e.name.segments[e.name.segments.len() - 1];
                     if !self.is_rejected(last) {
+                        let meta = self.declare_meta(e, table);
                         if let Some(info) = self.events.get_mut(&path_text(&e.name)) {
                             info.params = params;
+                            info.meta = Some(meta);
                         }
                     }
                 }
                 Item::Enum(_) | Item::Import(_) | Item::On(_) => {}
+            }
+        }
+    }
+
+    /// Crée la structure `X.meta` d'un événement : ses métadonnées, puis `source`.
+    fn declare_meta(&mut self, e: &EventDecl, table: usize) -> usize {
+        let mut fields: Vec<(String, Ty)> = Vec::new();
+        for m in &e.meta {
+            let ty = self.type_decl(&m.ty, table, false, true);
+            let clash = if m.name.name == META_SOURCE {
+                Some("`source` est fournie automatiquement (fichier et ligne de l'`emit`)")
+            } else if fields.iter().any(|(n, _)| *n == m.name.name) {
+                Some("métadonnée déclarée deux fois")
+            } else {
+                None
+            };
+            if let Some(why) = clash {
+                self.report(Diagnostic::new(
+                    &codes::DUPLICATE_FIELD,
+                    m.name.span,
+                    format!("`{}` : {why}", m.name.name),
+                ));
+                continue;
+            }
+            fields.push((m.name.name.clone(), ty));
+        }
+        fields.push((META_SOURCE.to_string(), Ty::String));
+        self.structs.push(StructInfo {
+            name: format!("{}.meta", path_text(&e.name)),
+            name_span: e.name.span,
+            file: self.file,
+            fields,
+            methods: Vec::new(),
+        });
+        self.structs.len() - 1
+    }
+
+    /// Type de `meta` dans un gestionnaire de l'événement.
+    fn meta_ty(&self, event: &Path) -> Option<Ty> {
+        let id = self.events.get(&path_text(event))?.meta?;
+        Some(Ty::Struct {
+            id,
+            name: self.structs[id].name.clone(),
+        })
+    }
+
+    fn meta_field_ty(&self, event: &Path, field: &str) -> Option<Ty> {
+        let id = self.events.get(&path_text(event))?.meta?;
+        self.structs[id]
+            .fields
+            .iter()
+            .find(|(n, _)| n == field)
+            .map(|(_, t)| t.clone())
+    }
+
+    /// `emit X(...) meta { ... }` : chaque métadonnée existe, une seule fois, du bon type.
+    fn check_emit_meta(&mut self, event: &Path, inits: &[FieldInit], table: usize) {
+        let mut seen: Vec<&str> = Vec::new();
+        for f in inits {
+            let t = self.check_expr(&f.value, table);
+            if seen.contains(&f.name.name.as_str()) {
+                self.report(Diagnostic::new(
+                    &codes::DUPLICATE_FIELD,
+                    f.name.span,
+                    format!("la métadonnée `{}` est donnée deux fois", f.name.name),
+                ));
+                continue;
+            }
+            seen.push(&f.name.name);
+            if !self.events.contains_key(&path_text(event)) {
+                continue; // MCF0205 déjà signalé
+            }
+            if f.name.name == META_SOURCE {
+                self.report(
+                    Diagnostic::new(
+                        &codes::UNKNOWN_FIELD,
+                        f.name.span,
+                        "`source` est remplie automatiquement : elle ne se donne pas",
+                    )
+                    .suggestion("retirer `source` de ce bloc `meta`"),
+                );
+                continue;
+            }
+            match self.meta_field_ty(event, &f.name.name) {
+                Some(ty) => self.expect_assignable(&t.ty, &ty, f.value.span),
+                None => {
+                    let declared = self
+                        .meta_ty(event)
+                        .and_then(|t| match t {
+                            Ty::Struct { id, .. } => Some(id),
+                            _ => None,
+                        })
+                        .map(|id| {
+                            self.structs[id]
+                                .fields
+                                .iter()
+                                .map(|(n, _)| n.as_str())
+                                .filter(|n| *n != META_SOURCE)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    let mut d = Diagnostic::new(
+                        &codes::UNKNOWN_FIELD,
+                        f.name.span,
+                        format!(
+                            "l'événement `{}` n'a pas de métadonnée `{}`",
+                            path_text(event),
+                            f.name.name
+                        ),
+                    );
+                    d = if declared.is_empty() {
+                        d.suggestion(format!(
+                            "la déclarer : `event {}(...) meta {{ {}: Type = valeur; }}`",
+                            path_text(event),
+                            f.name.name
+                        ))
+                    } else {
+                        d.expected(declared)
+                    };
+                    self.report(d);
+                }
             }
         }
     }
@@ -961,8 +1093,22 @@ impl Analyzer {
                 }
                 Item::Event(e) => {
                     self.enter_body(Ty::Void);
-                    for p in &e.params {
-                        self.declare_local(&p.name, Ty::Unknown);
+                    let params = self
+                        .events
+                        .get(&path_text(&e.name))
+                        .map(|i| i.params.clone())
+                        .unwrap_or_default();
+                    for (i, p) in e.params.iter().enumerate() {
+                        let ty = params.get(i).cloned().unwrap_or(Ty::Unknown);
+                        self.declare_local(&p.name, ty);
+                    }
+                    // Valeurs par défaut : calculées à chaque `emit`, les données de
+                    // l'événement sont lisibles (`label: String = "joueur " + _id;`).
+                    for m in &e.meta {
+                        let t = self.check_expr(&m.default, table);
+                        if let Some(ty) = self.meta_field_ty(&e.name, &m.name.name) {
+                            self.expect_assignable(&t.ty, &ty, m.default.span);
+                        }
                     }
                     self.leave_body();
                 }
@@ -973,6 +1119,13 @@ impl Analyzer {
                     for (i, b) in h.bindings.iter().enumerate() {
                         let ty = params.get(i).cloned().unwrap_or(Ty::Unknown);
                         self.declare_local(b, ty);
+                    }
+                    // `meta` : nom réservé par le compilateur, comme `self` dans une méthode.
+                    let meta = self.meta_ty(&h.event).unwrap_or(Ty::Unknown);
+                    if let Some(frame) = self.frames.last_mut() {
+                        frame
+                            .locals
+                            .insert(META_LOCAL.to_string(), (h.event.span, meta));
                     }
                     self.check_block_in_current_frame(&h.body, table);
                     self.leave_body();
@@ -1489,9 +1642,13 @@ impl Analyzer {
             }
             Stmt::Return { value, .. } => exprs.extend(value.iter()),
             Stmt::Emit {
-                args, background, ..
+                args,
+                meta,
+                background,
+                ..
             } => {
                 *calls |= !background;
+                exprs.extend(meta.iter().map(|f| &f.value));
                 exprs.extend(args.iter());
             }
             Stmt::Expr { expr, .. } => exprs.push(expr),
@@ -1575,6 +1732,23 @@ impl Analyzer {
                 }
             }
             Stmt::Assign { target, value, .. } => {
+                if root_name(target) == Some(META_LOCAL)
+                    && self
+                        .frames
+                        .iter()
+                        .any(|f| f.locals.contains_key(META_LOCAL))
+                {
+                    self.report(
+                        Diagnostic::new(
+                            &codes::NOT_ASSIGNABLE,
+                            target.span,
+                            "les métadonnées d'un événement se lisent seulement",
+                        )
+                        .suggestion(
+                            "copier la valeur dans une locale : `_channel: String = meta.channel;`",
+                        ),
+                    );
+                }
                 let t = self.check_any(target, table);
                 if let Resolved::Sym(
                     sym @ (Sym::Func { .. }
@@ -1686,6 +1860,7 @@ impl Analyzer {
             Stmt::Emit {
                 event,
                 args,
+                meta,
                 background,
                 span,
             } => {
@@ -1696,6 +1871,7 @@ impl Analyzer {
                         self.expect_assignable(&t.ty, p, a.span);
                     }
                 }
+                self.check_emit_meta(event, meta, table);
                 // `start emit` n'exécute rien tout de suite.
                 if !background {
                     self.forget_global_narrowings();
@@ -2597,4 +2773,14 @@ fn path_expr(path: &Path) -> Expr {
         };
     }
     e
+}
+
+/// Nom à la racine d'une cible d'affectation (`meta` dans `meta.a.b`).
+fn root_name(e: &Expr) -> Option<&str> {
+    match &e.kind {
+        ExprKind::Name { ident } => Some(&ident.name),
+        ExprKind::Member { object, .. } | ExprKind::Index { object, .. } => root_name(object),
+        ExprKind::Paren { expr } => root_name(expr),
+        _ => None,
+    }
 }

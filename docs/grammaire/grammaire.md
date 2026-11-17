@@ -23,7 +23,8 @@ ScopeDecl       = "scope" Ident "{" { Item } "}" ;
 ImportDecl      = "import" Path [ "as" Ident ] ";" ;
 StructDecl      = "struct" Ident "{" { Ident ":" TypeDecl ";" | FuncDecl } "}" ;
 EnumDecl        = "enum" Ident "{" [ Ident { "," Ident } [ "," ] ] "}" ;
-EventDecl       = "event" Path "(" [ Params ] ")" ";" ;
+EventDecl       = "event" Path "(" [ Params ] ")" ( ";" | MetaDecl ) ;
+MetaDecl        = "meta" "{" { Ident ":" TypeDecl "=" Expr ";" } "}" ;   (* `meta` : mot contextuel *)
 OnHandler       = "on" Path "(" [ LocalIdent { "," LocalIdent } ] ")" Block ;
 
 Block           = "{" { Stmt } "}" ;
@@ -35,7 +36,7 @@ Stmt            = LocalDecl
                 | "return" [ Expr ] ";"
                 | "break" ";"
                 | "continue" ";"
-                | [ "start" ] "emit" Path "(" [ Args ] ")" ";"
+                | [ "start" ] "emit" Path "(" [ Args ] ")" [ "meta" StructLit ] ";"
                 | SimpleStmt ";" ;
 SimpleStmt      = Place "=" Expr | Expr ;
 Place           = Name | Postfix "." Ident | Postfix "[" Expr "]" ;

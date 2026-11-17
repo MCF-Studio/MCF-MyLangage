@@ -491,13 +491,84 @@ impl Parser<'_> {
         let start = self.bump().span;
         let name = self.path()?;
         let params = self.params()?;
+        let mut meta = Vec::new();
+        if self.at_meta() {
+            meta = self.meta_decl()?;
+        } else {
+            self.expect_semi();
+        }
         let end = self.prev_span();
-        self.expect_semi();
         Some(EventDecl {
             span: start.to(end),
             name,
             params,
+            meta,
         })
+    }
+
+    /// `meta {` : mot contextuel (ce n'est pas un mot-clé, `meta` reste un nom possible).
+    fn at_meta(&self) -> bool {
+        self.at(&K::Ident) && self.text(self.span()) == "meta" && self.peek_at(1) == &K::LBrace
+    }
+
+    /// `meta { champ: Type = défaut; ... }` après les paramètres d'un événement.
+    fn meta_decl(&mut self) -> Option<Vec<MetaField>> {
+        self.bump(); // meta
+        self.bump(); // {
+        let mut fields = Vec::new();
+        while !matches!(self.peek(), K::RBrace | K::Eof) {
+            if self.at(&K::LocalIdent) {
+                let span = self.span();
+                let text = self.text(span).to_string();
+                self.diags.push(
+                    Diagnostic::new(
+                        &codes::INVALID_FIELD_NAME,
+                        span,
+                        format!("la métadonnée `{text}` ne doit pas commencer par `_`"),
+                    )
+                    .suggestion(format!("`{}`", text.trim_start_matches('_'))),
+                );
+            } else if !self.at(&K::Ident) {
+                self.unexpected(
+                    &codes::EXPECTED_IDENTIFIER,
+                    "une métadonnée `nom: Type = valeur;`",
+                );
+                return None;
+            }
+            let name = self.ident()?;
+            self.expect(K::Colon).then_some(())?;
+            let ty = self.type_decl()?;
+            let default = if self.eat(&K::Assign) {
+                self.expr()
+            } else {
+                // Erreur signalée, puis on continue : les autres métadonnées restent analysées.
+                let span = self.span();
+                self.diags.push(
+                    Diagnostic::new(
+                        &codes::UNEXPECTED_TOKEN,
+                        span,
+                        format!("la métadonnée `{}` n'a pas de valeur par défaut", name.name),
+                    )
+                    .expected("nom: Type = valeur;")
+                    .suggestion(
+                        "une métadonnée a toujours une valeur par défaut : l'émetteur n'est pas obligé de la préciser",
+                    ),
+                );
+                Expr {
+                    span,
+                    kind: ExprKind::Error,
+                }
+            };
+            let end = self.prev_span();
+            self.expect_semi();
+            fields.push(MetaField {
+                span: name.span.to(end),
+                name,
+                ty,
+                default,
+            });
+        }
+        self.expect(K::RBrace).then_some(fields)
     }
 
     fn on_handler(&mut self) -> Option<OnHandler> {
@@ -777,11 +848,17 @@ impl Parser<'_> {
         self.bump();
         let event = self.path()?;
         let args = self.call_args()?;
+        let mut meta = Vec::new();
+        if self.at_meta() {
+            self.bump(); // meta
+            meta = self.struct_literal_fields()?;
+        }
         let end = self.prev_span();
         self.expect_semi();
         Some(Stmt::Emit {
             event,
             args,
+            meta,
             background,
             span: start.to(end),
         })

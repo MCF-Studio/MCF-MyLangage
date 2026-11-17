@@ -1,0 +1,4 @@
+// attendu: MCF0100
+event Purchase(_item: String) meta {
+    priority: Int;
+}

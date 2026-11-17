@@ -81,6 +81,33 @@ func main(): Void {
 - `start emit` lance aussi chaque abonnement dans sa propre tâche.
 - `Listener` est une poignée (comme `Task`) : la copier désigne le même abonnement.
 
+### Métadonnées
+
+Un événement peut transporter des informations en plus de ses données, sans créer une structure pour chaque besoin (§11.1, D46) :
+
+```mcf
+event Purchase(_item: String) meta {
+    channel: String = "jeu";              // chaque métadonnée a une valeur par défaut
+    label: String = "achat de " + _item;  // les données de l'événement sont lisibles
+}
+
+on Purchase(_item) {
+    print(meta.label + " via " + meta.channel);
+    print(meta.source);                   // « main.mcf:12 », fournie automatiquement
+}
+
+func main(): Void {
+    emit Purchase("épée");                         // achat de épée via jeu
+    emit Purchase("arc") meta { channel: "web" };  // achat de arc via web
+}
+```
+
+- L'émetteur précise seulement ce qu'il veut changer ; les autres métadonnées prennent leur valeur par défaut, **calculée à chaque `emit`**.
+- Tout est vérifié : métadonnée inconnue (MCF0241), donnée deux fois (MCF0242), mauvais type (MCF0220), valeur par défaut absente (MCF0100).
+- `meta.source` (« fichier:ligne » de l'`emit`) est toujours fournie et ne se donne pas.
+- Dans un gestionnaire `on`, `meta` se lit seulement (MCF0212). Une fonction abonnée avec `on X => f` reçoit les données mais pas les métadonnées.
+- À venir : `meta.time`, quand le type `DateTime` aura des valeurs.
+
 ## Tâches
 
 Une fonction ordinaire peut tourner en tâche : pas de mot-clé `async` sur les fonctions (D41).
