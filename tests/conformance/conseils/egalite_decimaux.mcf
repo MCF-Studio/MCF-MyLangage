@@ -1,0 +1,12 @@
+// attendu: MCF0502, MCF0502
+func main(): Void {
+    _total: Float = 0.1 + 0.2;
+    print(_total == 0.3);
+    print(_total != 1);
+    print(1 == 1);
+}
+
+func literals(): Void {
+    print(3 == 3.0);
+    print(-1.5 != (2.0));
+}

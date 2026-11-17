@@ -1,0 +1,15 @@
+// attendu: MCF0500
+struct Worker {
+    done: Int;
+
+    func run(): Void {
+        while (self.done < 100) do {
+            self.done = self.done + 1;
+        }
+    }
+}
+
+func main(): Void {
+    _w: Worker = Worker { done: 0 };
+    await start _w.run();
+}

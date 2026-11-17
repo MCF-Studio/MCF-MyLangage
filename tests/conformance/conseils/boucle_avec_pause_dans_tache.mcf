@@ -1,0 +1,26 @@
+// attendu: aucun
+counter: Int = 0;
+
+func count(_n: Int): Void {
+    _i: Int = 0;
+    while (_i < _n) do {
+        counter = counter + 1;
+        sleep(0);
+        _i = _i + 1;
+    }
+}
+
+// Même boucle sans pause, mais jamais lancée en tâche : pas de conseil.
+func countNow(_n: Int): Void {
+    _i: Int = 0;
+    while (_i < _n) do {
+        counter = counter + 1;
+        _i = _i + 1;
+    }
+}
+
+func main(): Void {
+    _t: Task<Void> = start count(10);
+    countNow(10);
+    await _t;
+}

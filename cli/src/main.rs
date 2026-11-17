@@ -13,10 +13,14 @@ const USAGE: &str = "\
 MCF – MyLangage
 
 Usage :
-  mcf check <fichier|dossier> [--format text|json] [--strict]
-  mcf run <fichier|dossier> [--strict]
+  mcf check <fichier|dossier> [--format text|json] [--strict] [--no-hints]
+  mcf run <fichier|dossier> [--strict] [--no-hints]
   mcf describe errors|keywords [--format text|json]
   mcf version
+
+Options :
+  --strict     les avertissements deviennent des erreurs
+  --no-hints   masque les conseils pour apprendre (`conseil[MCF05xx]`, jamais bloquants)
 
 Commandes prévues (pas encore implémentées) : new, build, watch, clean, info, fmt, doc";
 
@@ -30,6 +34,7 @@ struct Options {
     positional: Vec<String>,
     format: Format,
     strict: bool,
+    hints: bool,
 }
 
 fn parse_options(args: &[String]) -> Result<Options, String> {
@@ -37,11 +42,13 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
         positional: Vec::new(),
         format: Format::Text,
         strict: false,
+        hints: true,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--strict" => opts.strict = true,
+            "--no-hints" => opts.hints = false,
             "--format" => {
                 opts.format = match it.next().map(String::as_str) {
                     Some("text") => Format::Text,
@@ -150,17 +157,20 @@ fn check(opts: &Options) -> ExitCode {
         Err(code) => return code,
     };
     let files_checked = sources.len();
-    let (mut errors, mut warnings) = (0usize, 0usize);
+    let (mut errors, mut warnings, mut hints) = (0usize, 0usize, 0usize);
     let mut json_diags = Vec::new();
     let reports = check_project(&sources);
     for (source, mut diags) in sources.into_iter().zip(reports) {
         let file = SourceFile::new(source.name, source.text);
+        diags.retain(|d| opts.hints || !d.is_hint());
         for diag in &mut diags {
             if opts.strict {
                 diag.promote_to_error();
             }
             if diag.is_error() {
                 errors += 1;
+            } else if diag.is_hint() {
+                hints += 1;
             } else {
                 warnings += 1;
             }
@@ -175,7 +185,7 @@ fn check(opts: &Options) -> ExitCode {
         Format::Text => {
             let status = if errors == 0 { "ok" } else { "échec" };
             eprintln!(
-                "{status} : {files_checked} fichier(s), {errors} erreur(s), {warnings} avertissement(s){}",
+                "{status} : {files_checked} fichier(s), {errors} erreur(s), {warnings} avertissement(s), {hints} conseil(s){}",
                 if opts.strict { " [strict]" } else { "" }
             );
         }
@@ -186,6 +196,7 @@ fn check(opts: &Options) -> ExitCode {
                 "files_checked": files_checked,
                 "errors": errors,
                 "warnings": warnings,
+                "hints": hints,
                 "diagnostics": json_diags,
             });
             println!(
@@ -215,6 +226,9 @@ fn run(opts: &Options) -> ExitCode {
     let mut errors = 0usize;
     for (file, diags) in files.iter().zip(check_project(&sources)) {
         for mut diag in diags {
+            if diag.is_hint() && !opts.hints {
+                continue;
+            }
             if opts.strict {
                 diag.promote_to_error();
             }

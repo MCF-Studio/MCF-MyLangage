@@ -1,0 +1,7 @@
+// attendu: MCF0501
+func main(): Void {
+    _n: Int = 0;
+    while (true) do {
+        _n = _n + 1;
+    }
+}

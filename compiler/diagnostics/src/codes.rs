@@ -1,7 +1,7 @@
 //! Registre des identifiants de diagnostics.
 //!
 //! Plages : 00xx lexical, 01xx syntaxe, 02xx sémantique/types, 03xx sécurité (à venir),
-//! 04xx exécution (`mcf run`).
+//! 04xx exécution (`mcf run`), 05xx conseils pour apprendre (jamais bloquants).
 
 use crate::{Category, Severity};
 use serde::Serialize;
@@ -116,4 +116,9 @@ codes! {
     DEADLOCK = "MCF0411", Runtime, Error, "Toutes les tâches s'attendent : le programme ne peut plus avancer.";
     TASK_START_FAILED = "MCF0412", Runtime, Error, "Le système refuse de démarrer une nouvelle tâche.";
     INTERNAL_RUNTIME_ERROR = "MCF0499", Runtime, Error, "Erreur interne de l'interpréteur (à signaler).";
+
+    LOOP_WITHOUT_PAUSE_IN_TASK = "MCF0500", Advice, Hint, "Boucle sans pause dans une fonction lancée en tâche : les autres tâches attendent qu'elle finisse.";
+    ENDLESS_LOOP_WITHOUT_PAUSE = "MCF0501", Advice, Hint, "`while (true)` qui ne s'arrête jamais et ne laisse jamais la main : le programme se fige.";
+    FLOAT_EQUALITY = "MCF0502", Advice, Hint, "`==` entre décimaux : les arrondis rendent l'égalité exacte trompeuse.";
+    COMPARISON_WITH_BOOL_LITERAL = "MCF0503", Advice, Hint, "Comparaison avec `true` / `false` inutile.";
 }

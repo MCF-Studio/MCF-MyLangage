@@ -1,0 +1,11 @@
+// attendu: MCF0503, MCF0503
+func main(): Void {
+    _ready: Bool = true;
+    if (_ready == true) then {
+        print("prêt");
+    }
+    if (false == _ready) then {
+        print("pas prêt");
+    }
+    print(_ready == !_ready);
+}

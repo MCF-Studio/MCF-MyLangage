@@ -1,0 +1,9 @@
+// attendu: aucun
+// Boucle de jeu : infinie, mais elle fait une pause à chaque tour.
+func main(): Void {
+    _frame: Int = 0;
+    while (true) do {
+        _frame = _frame + 1;
+        sleep(16);
+    }
+}

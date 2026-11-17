@@ -60,11 +60,23 @@ enum Builtin {
 
 #[derive(Clone, Debug)]
 enum Sym {
-    Global { ty: Ty },
-    Func { params: Vec<Ty>, ret: Ty },
-    Scope { table: usize },
-    Struct { id: usize },
-    Enum { id: usize },
+    Global {
+        ty: Ty,
+    },
+    Func {
+        params: Vec<Ty>,
+        ret: Ty,
+        origin: FuncId,
+    },
+    Scope {
+        table: usize,
+    },
+    Struct {
+        id: usize,
+    },
+    Enum {
+        id: usize,
+    },
     Builtin(Builtin),
 }
 
@@ -104,7 +116,11 @@ struct MethodInfo {
     name: String,
     params: Vec<Ty>,
     ret: Ty,
+    origin: FuncId,
 }
+
+/// Identité d'une fonction ou méthode MCF : (fichier, début de son nom).
+type FuncId = (usize, usize);
 
 /// Nom interne de la locale qui porte le receveur d'une méthode. `self` est un mot-clé :
 /// aucun identifiant écrit par l'utilisateur ne peut le masquer.
@@ -132,7 +148,8 @@ enum Resolved {
     Method {
         params: Vec<Ty>,
         ret: Ty,
-        user: bool,
+        /// Méthode écrite en MCF (`None` : méthode native).
+        origin: Option<FuncId>,
     },
     Opaque,
 }
@@ -172,6 +189,10 @@ pub fn analyze(modules: &[&Module]) -> Vec<Vec<Diagnostic>> {
         frames: Vec::new(),
         loop_depth: 0,
         ret: None,
+        current_func: None,
+        last_call: None,
+        started: HashSet::new(),
+        loops_without_pause: Vec::new(),
     };
     for (file, module) in modules.iter().enumerate() {
         a.file = file;
@@ -193,6 +214,7 @@ pub fn analyze(modules: &[&Module]) -> Vec<Vec<Diagnostic>> {
         a.file = file;
         a.check_items(&module.items, a.roots[file]);
     }
+    a.advise_loops_in_tasks();
     a.diags
 }
 
@@ -212,6 +234,14 @@ struct Analyzer {
     loop_depth: usize,
     /// Type de retour de la fonction en cours (`None` hors fonction).
     ret: Option<Ty>,
+    /// Fonction ou méthode dont on vérifie le corps.
+    current_func: Option<FuncId>,
+    /// Fonction MCF visée par le dernier appel vérifié (pour `start`).
+    last_call: Option<FuncId>,
+    /// Fonctions lancées quelque part avec `start`.
+    started: HashSet<FuncId>,
+    /// Boucles `while` sans aucun point de suspension possible : (fonction, fichier, endroit).
+    loops_without_pause: Vec<(FuncId, usize, Span)>,
 }
 
 fn path_text(path: &Path) -> String {
@@ -489,6 +519,7 @@ impl Analyzer {
                     Sym::Func {
                         params: vec![Ty::Unknown; f.params.len()],
                         ret: Ty::Unknown,
+                        origin: (self.file, f.name.span.start),
                     },
                 ),
                 Item::Scope(s) => {
@@ -674,7 +705,16 @@ impl Analyzer {
                         Some(r) => self.type_decl(r, table, true, true),
                         None => Ty::Unknown,
                     };
-                    self.set_sym(table, &f.name, Sym::Func { params, ret });
+                    let origin = (self.file, f.name.span.start);
+                    self.set_sym(
+                        table,
+                        &f.name,
+                        Sym::Func {
+                            params,
+                            ret,
+                            origin,
+                        },
+                    );
                 }
                 Item::Scope(s) => {
                     if let Some(Sym::Scope { table: child }) =
@@ -732,6 +772,7 @@ impl Analyzer {
                         } else {
                             methods.push(MethodInfo {
                                 name: m.name.name.clone(),
+                                origin: (self.file, m.name.span.start),
                                 params,
                                 ret,
                             });
@@ -902,7 +943,7 @@ impl Analyzer {
                     if self.is_rejected(&f.name) {
                         continue;
                     }
-                    if let Some(Sym::Func { params, ret }) =
+                    if let Some(Sym::Func { params, ret, .. }) =
                         self.tables[table].names.get(&f.name.name).cloned()
                     {
                         self.check_func_body(f, &params, ret, None, table);
@@ -979,6 +1020,7 @@ impl Analyzer {
         table: usize,
     ) {
         self.enter_body(ret.clone());
+        self.current_func = Some((self.file, f.name.span.start));
         if let (Some(ty), Some(frame)) = (receiver, self.frames.last_mut()) {
             frame
                 .locals
@@ -1002,6 +1044,7 @@ impl Analyzer {
                 .suggestion("ajouter un `return` à la fin, ou une branche `else` qui retourne"),
             );
         }
+        self.current_func = None;
         self.leave_body();
     }
 
@@ -1500,10 +1543,11 @@ impl Analyzer {
                 }
             }
             Stmt::If(i) => self.check_if(i, table),
-            Stmt::While { cond, body, .. } => {
+            Stmt::While { cond, body, span } => {
                 self.prepare_loop(&[body], &[], table);
                 self.check_condition(cond, table);
                 self.loop_body(body, table);
+                self.advise_while(cond, body, *span, table);
             }
             Stmt::For {
                 init,
@@ -1734,10 +1778,13 @@ impl Analyzer {
             ExprKind::Call { callee, args } => self.check_call(expr, callee, args, table),
             ExprKind::Start { call } => {
                 let ty = match &call.kind {
-                    ExprKind::Call { .. } => match self.check_any(call, table).ty {
-                        Ty::Unknown => Ty::Task(Box::new(Ty::Unknown)),
-                        t => Ty::Task(Box::new(t)),
-                    },
+                    ExprKind::Call { callee, args } => {
+                        let t = self.check_call(call, callee, args, table).ty;
+                        if let Some(f) = self.last_call {
+                            self.started.insert(f);
+                        }
+                        Ty::Task(Box::new(t))
+                    }
                     // Déjà signalé par le parser (MCF0121).
                     _ => {
                         self.check_any(call, table);
@@ -1828,6 +1875,7 @@ impl Analyzer {
                     }
                     _ => self.check_expr(rhs, table).ty,
                 };
+                self.advise_equality(*op, lhs, rhs, &l, &r, expr.span);
                 Typed::value(self.binary_ty(*op, &l, &r, lhs.span, rhs.span, expr.span))
             }
             ExprKind::Is { expr: inner, ty } => {
@@ -1947,7 +1995,7 @@ impl Analyzer {
                                 res: Resolved::Method {
                                     params: m.params.clone(),
                                     ret: m.ret.clone(),
-                                    user: true,
+                                    origin: Some(m.origin),
                                 },
                                 ty: Ty::Unknown,
                                 declared: Ty::Unknown,
@@ -1981,7 +2029,7 @@ impl Analyzer {
                         res: Resolved::Method {
                             params,
                             ret,
-                            user: false,
+                            origin: None,
                         },
                         ty: Ty::Unknown,
                         declared: Ty::Unknown,
@@ -2114,8 +2162,13 @@ impl Analyzer {
                 );
             }
         };
+        self.last_call = match &c.res {
+            Resolved::Sym(Sym::Func { origin, .. }) => Some(*origin),
+            Resolved::Method { origin, .. } => *origin,
+            _ => None,
+        };
         let ret = match c.res {
-            Resolved::Sym(Sym::Func { params, ret }) => {
+            Resolved::Sym(Sym::Func { params, ret, .. }) => {
                 count_error(self, params.len());
                 for ((t, span), p) in arg_tys.iter().zip(&params) {
                     self.expect_assignable(t, p, *span);
@@ -2124,12 +2177,16 @@ impl Analyzer {
                 self.forget_global_narrowings();
                 ret
             }
-            Resolved::Method { params, ret, user } => {
+            Resolved::Method {
+                params,
+                ret,
+                origin,
+            } => {
                 count_error(self, params.len());
                 for ((t, span), p) in arg_tys.iter().zip(&params) {
                     self.expect_assignable(t, p, *span);
                 }
-                if user {
+                if origin.is_some() {
                     // Une méthode MCF peut modifier des globales, comme une fonction.
                     self.forget_global_narrowings();
                 }
@@ -2191,6 +2248,115 @@ impl Analyzer {
             }
         };
         Typed::value(ret)
+    }
+
+    // ---------------------------------------------------------------- conseils (05xx)
+
+    /// Conseils sur une boucle `while` qui ne contient aucun point de suspension possible :
+    /// ni `sleep`, ni `await`, ni appel de fonction MCF (qui pourrait en contenir), ni `emit`.
+    fn advise_while(&mut self, cond: &Expr, body: &Block, span: Span, table: usize) {
+        let mut assigned = HashSet::new();
+        let mut may_pause = false;
+        self.scan_block(body, table, &mut assigned, &mut may_pause);
+        self.scan_expr(cond, table, &mut may_pause);
+        if may_pause {
+            return;
+        }
+        let head = Span::new(span.start, cond.span.end + 1);
+        if is_true_literal(cond) && !leaves_loop(body) {
+            self.report(
+                Diagnostic::new(
+                    &codes::ENDLESS_LOOP_WITHOUT_PAUSE,
+                    head,
+                    "cette boucle ne s'arrête jamais (`while (true)` sans `break` ni `return`) et ne fait aucune pause",
+                )
+                .suggestion(
+                    "le programme va tourner à fond sans jamais finir. Pour une boucle de jeu ou d'attente, ajoute `sleep(16);` dans la boucle (environ 60 tours par seconde) ; sinon prévois un `break` pour en sortir",
+                ),
+            );
+            return;
+        }
+        if let Some(f) = self.current_func {
+            self.loops_without_pause.push((f, self.file, head));
+        }
+    }
+
+    /// Une boucle sans pause dans une fonction lancée avec `start` monopolise l'exécution :
+    /// une seule tâche tourne à la fois (DECISIONS D42).
+    fn advise_loops_in_tasks(&mut self) {
+        for (f, file, span) in std::mem::take(&mut self.loops_without_pause) {
+            if !self.started.contains(&f) {
+                continue;
+            }
+            self.file = file;
+            self.report(
+                Diagnostic::new(
+                    &codes::LOOP_WITHOUT_PAUSE_IN_TASK,
+                    span,
+                    "cette boucle ne fait aucune pause, alors que sa fonction est lancée avec `start` : tant qu'elle tourne, les autres tâches (et `main`) attendent",
+                )
+                .suggestion(
+                    "si la boucle est courte, ce n'est pas grave. Si elle peut durer (beaucoup de tours, attente d'un état), ajoute `sleep(0);` dans la boucle pour laisser les autres tâches avancer à chaque tour",
+                ),
+            );
+        }
+    }
+
+    /// Conseils sur `==` / `!=` (types déjà connus).
+    fn advise_equality(
+        &mut self,
+        op: BinaryOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        l: &Ty,
+        r: &Ty,
+        whole: Span,
+    ) {
+        if !matches!(op, BinaryOp::Eq | BinaryOp::NotEq) {
+            return;
+        }
+        let sym = op_symbol(op);
+        let literal = |e: &Expr| match &e.kind {
+            ExprKind::Bool { value } => Some(*value),
+            _ => None,
+        };
+        if let Some((value, other)) = literal(rhs)
+            .map(|v| (v, lhs))
+            .or(literal(lhs).map(|v| (v, rhs)))
+        {
+            if *l == Ty::Bool && *r == Ty::Bool {
+                let positive = value == (op == BinaryOp::Eq);
+                let text = other_text(other);
+                self.report(
+                    Diagnostic::new(
+                        &codes::COMPARISON_WITH_BOOL_LITERAL,
+                        whole,
+                        format!("comparer un booléen avec `{value}` n'est pas nécessaire"),
+                    )
+                    .suggestion(if positive {
+                        format!("écrire simplement `{text}`")
+                    } else {
+                        format!("écrire `!{text}` (« pas {text} »)")
+                    }),
+                );
+            }
+            return;
+        }
+        // Deux littéraux (`3 == 3.0`) : aucun calcul, donc aucun arrondi possible.
+        if (*l == Ty::Float || *r == Ty::Float)
+            && !(is_number_literal(lhs) && is_number_literal(rhs))
+        {
+            self.report(
+                Diagnostic::new(
+                    &codes::FLOAT_EQUALITY,
+                    whole,
+                    format!("`{sym}` entre décimaux : un calcul peut donner 0.30000000000000004 au lieu de 0.3, et l'égalité échoue"),
+                )
+                .suggestion(
+                    "comparer avec une petite marge, ex. `_d: Float = a - b;` puis `_d < 0.0001 && _d > -0.0001`, ou travailler en entiers (centimes plutôt qu'euros)",
+                ),
+            );
+        }
     }
 
     fn not_narrowed_or_invalid(&mut self, ty: &Ty, span: Span, op: &str) {
@@ -2261,5 +2427,70 @@ impl Analyzer {
                 result_if_unknown
             }
         }
+    }
+}
+
+// ==================================================================== aides des conseils
+
+fn is_true_literal(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Bool { value } => *value,
+        ExprKind::Paren { expr } => is_true_literal(expr),
+        _ => false,
+    }
+}
+
+fn is_number_literal(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int { .. } | ExprKind::Float { .. } => true,
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            expr,
+        }
+        | ExprKind::Paren { expr } => is_number_literal(expr),
+        _ => false,
+    }
+}
+
+/// Le corps contient-il un `return`, ou un `break` qui sort de cette boucle-ci ?
+fn leaves_loop(body: &Block) -> bool {
+    fn stmt(s: &Stmt, nested: bool) -> bool {
+        match s {
+            Stmt::Return { .. } => true,
+            Stmt::Break { .. } => !nested,
+            Stmt::If(i) => {
+                let mut cur = Some(i);
+                while let Some(i) = cur {
+                    if block(&i.then_block, nested) {
+                        return true;
+                    }
+                    cur = match &i.else_branch {
+                        Some(Else::Block(b)) => return block(b, nested),
+                        Some(Else::If(n)) => Some(n),
+                        None => None,
+                    };
+                }
+                false
+            }
+            Stmt::While { body, .. } | Stmt::For { body, .. } | Stmt::Foreach { body, .. } => {
+                block(body, true)
+            }
+            _ => false,
+        }
+    }
+    fn block(b: &Block, nested: bool) -> bool {
+        b.stmts.iter().any(|s| stmt(s, nested))
+    }
+    block(body, false)
+}
+
+/// Texte court d'une expression simple pour un conseil (`ready`, `_done`, `p.alive`).
+fn other_text(e: &Expr) -> String {
+    match &e.kind {
+        ExprKind::Name { ident } => ident.name.clone(),
+        ExprKind::SelfRef => "self".into(),
+        ExprKind::Member { object, field } => format!("{}.{}", other_text(object), field.name),
+        ExprKind::Paren { expr } => other_text(expr),
+        _ => "la condition".into(),
     }
 }

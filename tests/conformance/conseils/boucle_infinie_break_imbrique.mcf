@@ -1,0 +1,11 @@
+// attendu: MCF0501
+// Le `break` sort de la boucle intérieure seulement.
+func main(): Void {
+    while (true) do {
+        _i: Int = 0;
+        while (_i < 3) do {
+            _i = _i + 1;
+            break;
+        }
+    }
+}

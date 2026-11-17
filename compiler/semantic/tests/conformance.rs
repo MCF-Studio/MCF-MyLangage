@@ -1,8 +1,11 @@
 //! Tests de conformité sur le pipeline complet (syntaxe + sémantique).
 //!
-//! - `tests/conformance/valid/` : chaque entrée doit être acceptée sans aucun diagnostic.
+//! - `tests/conformance/valid/` : chaque entrée doit être acceptée sans erreur ni
+//!   avertissement (les conseils sont ignorés).
 //! - `tests/conformance/invalid/` : chaque fichier commence par `// attendu: MCFxxxx[, ...]`
-//!   et doit produire exactement ces identifiants, dans l'ordre.
+//!   et doit produire exactement ces identifiants, dans l'ordre (conseils ignorés).
+//! - `tests/conformance/conseils/` : même en-tête, comparé aux seuls conseils (MCF05xx) ;
+//!   `// attendu: aucun` vérifie qu'aucun conseil n'est donné à tort.
 //!
 //! Une entrée est soit un fichier `.mcf` (projet d'un seul fichier), soit un dossier
 //! (projet multi-fichiers ; les en-têtes `// attendu:` de ses fichiers sont concaténés
@@ -46,16 +49,19 @@ fn sources(entry: &Path) -> Vec<Source> {
         .collect()
 }
 
-fn run(entry: &Path) -> (Vec<String>, Vec<&'static str>) {
+/// (codes attendus, codes obtenus) ; `hints` : ne garder que les conseils, sinon les ignorer.
+fn run(entry: &Path, hints: bool) -> (Vec<String>, Vec<&'static str>) {
     let srcs = sources(entry);
     let expected = srcs
         .iter()
         .filter_map(|s| s.text.lines().next()?.strip_prefix("// attendu:"))
         .flat_map(|h| h.split(',').map(|c| c.trim().to_string()))
+        .filter(|c| c != "aucun")
         .collect();
     let got = check_project(&srcs)
         .into_iter()
         .flatten()
+        .filter(|d| d.is_hint() == hints)
         .map(|d| d.code.id)
         .collect();
     (expected, got)
@@ -65,7 +71,7 @@ fn run(entry: &Path) -> (Vec<String>, Vec<&'static str>) {
 fn valid_programs_are_accepted() {
     let mut failures = Vec::new();
     for entry in entries("valid") {
-        let (_, got) = run(&entry);
+        let (_, got) = run(&entry, false);
         if !got.is_empty() {
             failures.push(format!("{} : {got:?}", entry.display()));
         }
@@ -81,7 +87,7 @@ fn valid_programs_are_accepted() {
 fn invalid_programs_report_expected_codes() {
     let mut failures = Vec::new();
     for entry in entries("invalid") {
-        let (expected, got) = run(&entry);
+        let (expected, got) = run(&entry, false);
         assert!(
             !expected.is_empty(),
             "{} : en-tête `// attendu:` manquant",
@@ -90,6 +96,36 @@ fn invalid_programs_report_expected_codes() {
         if got != expected {
             failures.push(format!(
                 "{} : attendu {expected:?}, obtenu {got:?}",
+                entry.display()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn hints_are_given_where_expected() {
+    let mut failures = Vec::new();
+    for entry in entries("conseils") {
+        let header = sources(&entry)
+            .iter()
+            .any(|s| s.text.starts_with("// attendu:"));
+        assert!(
+            header,
+            "{} : en-tête `// attendu:` manquant",
+            entry.display()
+        );
+        let (expected, got) = run(&entry, true);
+        if got != expected {
+            failures.push(format!(
+                "{} : attendu {expected:?}, obtenu {got:?}",
+                entry.display()
+            ));
+        }
+        let (_, errors) = run(&entry, false);
+        if !errors.is_empty() {
+            failures.push(format!(
+                "{} : erreurs inattendues {errors:?}",
                 entry.display()
             ));
         }

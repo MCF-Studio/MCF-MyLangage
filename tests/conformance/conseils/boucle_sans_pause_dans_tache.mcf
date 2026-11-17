@@ -1,0 +1,15 @@
+// attendu: MCF0500
+counter: Int = 0;
+
+func count(_n: Int): Void {
+    _i: Int = 0;
+    while (_i < _n) do {
+        counter = counter + 1;
+        _i = _i + 1;
+    }
+}
+
+func main(): Void {
+    _t: Task<Void> = start count(1000000);
+    await _t;
+}

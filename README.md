@@ -116,7 +116,7 @@ Tout est expliqué dans [CONTRIBUTING.md](CONTRIBUTING.md). Les ⭐ font aussi p
 |---|---|
 | [Cahier des charges 1.2](docs/cahier-des-charges/edition-1.2.md) | Référence du langage, de l'IDE et de la sécurité |
 | [Chiffrement et clés](docs/securite/chiffrement-et-cles.md) | Engagement « aucun accès éditeur », menaces, limites |
-| [Lexique](docs/grammaire/lexique.md) · [Grammaire](docs/grammaire/grammaire.md) · [Résolution des noms](docs/grammaire/resolution-des-noms.md) · [Types](docs/grammaire/types.md) · [Structures](docs/grammaire/structures.md) · [Exécution](docs/grammaire/execution.md) | Ce que le compilateur vérifie et exécute aujourd'hui |
+| [Lexique](docs/grammaire/lexique.md) · [Grammaire](docs/grammaire/grammaire.md) · [Résolution des noms](docs/grammaire/resolution-des-noms.md) · [Types](docs/grammaire/types.md) · [Structures](docs/grammaire/structures.md) · [Exécution](docs/grammaire/execution.md) · [Conseils pour apprendre](docs/grammaire/conseils.md) | Ce que le compilateur vérifie et exécute aujourd'hui |
 | [Décisions](docs/DECISIONS.md) | Arbitrages en attente de validation |
 | [Cahier des charges 1.0](docs/cahier-des-charges/edition-1.0.md) | Historique |
 

@@ -1,0 +1,10 @@
+// attendu: aucun
+func main(): Void {
+    _n: Int = 0;
+    while (true) do {
+        _n = _n + 1;
+        if (_n > 10) then {
+            break;
+        }
+    }
+}

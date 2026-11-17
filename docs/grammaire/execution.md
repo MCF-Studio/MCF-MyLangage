@@ -83,7 +83,7 @@ Les tâches ne s'exécutent **jamais en même temps** : une tâche garde la main
 1. les tâches prêtes, dans l'ordre où elles le sont devenues (`start`, fin d'un `await`, annulation) ;
 2. sinon, la tâche dont le `sleep` se termine le plus tôt sur une horloge **virtuelle** (somme des durées demandées), à égalité dans l'ordre des appels à `sleep`. Le programme attend réellement l'échéance : `sleep(ms)` dure toujours au moins `ms`.
 
-`sleep(0)` laisse passer les tâches prêtes. Une boucle de calcul sans point de suspension garde la main jusqu'au bout.
+`sleep(0)` laisse passer les tâches prêtes. Une boucle de calcul sans point de suspension garde la main jusqu'au bout : le compilateur le signale par un [conseil](conseils.md) (MCF0500, MCF0501).
 
 ### Annulation
 

@@ -4,7 +4,8 @@
 //! - `nom.attendu` contient exactement ce que le programme doit afficher (stdout).
 //! - Si la première ligne du premier fichier est `// erreur: MCFxxxx`, l'exécution doit
 //!   s'arrêter sur cette erreur (après avoir affiché `nom.attendu`, s'il existe).
-//! - Chaque entrée doit d'abord passer la vérification sans aucun diagnostic.
+//! - Chaque entrée doit d'abord passer la vérification sans erreur ni avertissement
+//!   (les conseils sont ignorés).
 
 use mcf_semantic::{check_project, Source};
 use std::fs;
@@ -39,6 +40,7 @@ fn run_entry(entry: &Path) -> Result<(), String> {
     let diags: Vec<_> = check_project(&srcs)
         .into_iter()
         .flatten()
+        .filter(|d| !d.is_hint())
         .map(|d| format!("{} {}", d.code.id, d.message))
         .collect();
     if !diags.is_empty() {

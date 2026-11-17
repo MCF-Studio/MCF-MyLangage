@@ -32,6 +32,8 @@ impl Span {
 pub enum Severity {
     Error,
     Warning,
+    /// Conseil pédagogique : jamais bloquant, même en `--strict` (DECISIONS D43).
+    Hint,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -47,6 +49,8 @@ pub enum Category {
     Config,
     Security,
     Runtime,
+    /// Conseils pour apprendre (plage 05xx).
+    Advice,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,9 +96,16 @@ impl Diagnostic {
         self.severity == Severity::Error
     }
 
-    /// Mode strict : aucun avertissement ne peut passer silencieusement.
+    pub fn is_hint(&self) -> bool {
+        self.severity == Severity::Hint
+    }
+
+    /// Mode strict : aucun avertissement ne peut passer silencieusement. Les conseils restent
+    /// des conseils.
     pub fn promote_to_error(&mut self) {
-        self.severity = Severity::Error;
+        if self.severity == Severity::Warning {
+            self.severity = Severity::Error;
+        }
     }
 }
 
@@ -155,6 +166,7 @@ impl SourceFile {
         let severity = match diag.severity {
             Severity::Error => "erreur",
             Severity::Warning => "avertissement",
+            Severity::Hint => "conseil",
         };
         let mut out = format!(
             "{severity}[{}] {}: {}\n  --> {}:{}:{}\n",
