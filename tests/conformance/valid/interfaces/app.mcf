@@ -23,6 +23,10 @@ func retirer(_nom: String): Void {
     print(_nom);
 }
 
+func chercher(_texte: String): Void {
+    recherche = _texte;
+}
+
 func titre(_n: Int): String {
     return "Clics : " + _n;
 }

@@ -3,7 +3,7 @@ import clics;
 import ajouter;
 import retirer;
 import titre;
-import recherche;
+import chercher;
 import noms;
 import largeur;
 import accent;
@@ -48,12 +48,13 @@ ui Compteur {
 ui Liste {
     prop entete: String;
     state filtre: String = "";
+    state saisie: String = "";
 
     view {
         Box(layout: column, align: stretch) {
             Text(entete, textAlign: center);
             Input(bind value: filtre, placeholder: "Filtrer", onSubmit: emit Ferme(filtre));
-            Input(bind value: recherche);
+            Input(bind value: saisie, onChange: chercher(saisie));
             foreach (_n in noms) do {
                 Box(layout: row, justify: between, onEnter: filtre = _n) {
                     Text(_n, grow: 1);

@@ -924,8 +924,7 @@ impl Analyzer {
         );
     }
 
-    /// `bind value: cible` sur un `Input` : la cible est un `state` ou une globale `String`
-    /// modifiable.
+    /// `bind value: cible` sur un `Input` : la cible est un `state` `String` du composant (D55).
     fn check_bind(&mut self, p: &UiProp, prim: &Primitive, ctx: &Ctx) {
         let bad = |a: &mut Self, span: Span, message: &str| {
             a.report(
@@ -965,23 +964,22 @@ impl Analyzer {
                 return;
             }
             Some(UiMemberKind::State) => self.lookup_typed(name, ctx.table).map(|(_, t)| t),
-            None => match self.lookup_typed(name, ctx.table) {
-                None => {
+            // D55 : l'interface n'écrit jamais directement dans l'état du programme ; une
+            // variable du programme change dans une fonction `.mcf` (`onChange: f(saisie)`).
+            None => {
+                if self.lookup_typed(name, ctx.table).is_none() {
                     self.undeclared(ident);
-                    return;
+                } else if self.is_config_name(name, ctx.table) {
+                    bad(self, ident.span, &format!("`{name}` vient d'un fichier de configuration : elle se lit seulement"));
+                } else {
+                    bad(
+                        self,
+                        ident.span,
+                        &format!("`{name}` n'est pas un `state` du composant : seul un `state` se lie avec `bind`, une variable du programme se modifie dans une fonction `.mcf` (`onChange: fonction(saisie)`)"),
+                    );
                 }
-                Some((Resolved::Sym(Sym::Global { .. }), t)) => {
-                    if self.is_config_name(name, ctx.table) {
-                        bad(self, ident.span, &format!("`{name}` vient d'un fichier de configuration : elle se lit seulement"));
-                        return;
-                    }
-                    Some(t)
-                }
-                Some(_) => {
-                    bad(self, ident.span, "la cible d'un `bind` est un `state` du composant ou une variable globale du programme");
-                    return;
-                }
-            },
+                return;
+            }
         };
         if let Some(t) = ty {
             if !(t.is_unknown() || t == Ty::String) {

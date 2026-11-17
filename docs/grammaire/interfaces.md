@@ -137,12 +137,12 @@ Un style déclaré dans un `ui` n'est visible que dans ce `ui` ; un style décla
 ## Liaison avec le code (D55)
 
 - Comme dans un `.mcf`, les événements sont visibles sans import ; les variables, fonctions et types s'importent (`import clics;`).
-- **Lecture** : toute expression d'un `.uimcf` peut lire les `prop`, les `state`, les variables de `foreach` et ce qui est importé des `.mcf` (`import clics;`), avec les mêmes règles de types qu'en `.mcf`. Les appels de fonctions sont permis (mise en forme d'un texte, `items.length()`) ; leurs effets de bord ne sont pas encore vérifiés (D56). `start`, `await` et `on X => f` sont refusés (MCF0715).
+- **Lecture** : toute expression d'un `.uimcf` peut lire les `prop`, les `state`, les variables de `foreach` et ce qui est importé des `.mcf` (`import clics;`), avec les mêmes règles de types qu'en `.mcf`. Les appels de fonctions sont permis (mise en forme d'un texte, `items.length()`) ; leurs effets de bord ne sont pas encore vérifiés ; en phase 11, une fonction qui a des effets de bord sera refusée dans une vue (D56). `start`, `await` et `on X => f` sont refusés (MCF0715).
 - **Événements** (`onClick`, `onEnter`, `onLeave`, `onChange`, `onSubmit`) : la valeur est une action, jamais un bloc de code :
   - un appel de fonction `.mcf` qui ne retourne rien : `onClick: ajouter` ou `onClick: retirer(_item)` ;
   - un événement MCF : `onClick: emit Ferme(id)` ;
   - une affectation d'un `state` du composant : `onClick: ouvert = !ouvert`. Seuls les `state` se modifient ainsi : une variable du programme se modifie dans une fonction `.mcf` (MCF0710).
-- **Liaison bidirectionnelle** : `Input(bind value: recherche)` affiche la valeur et la met à jour à chaque saisie. La cible est un `state` ou une globale importée du bon type, jamais une configuration ou une `prop` (MCF0711). Seule `value` d'`Input` se lie pour l'instant.
+- **Liaison bidirectionnelle** : `Input(bind value: recherche)` affiche la valeur et la met à jour à chaque saisie. La cible est un `state` `String` du composant, jamais une variable du programme, une configuration ou une `prop` (MCF0711). Pour faire entrer la saisie dans le programme, passer par une fonction `.mcf` : `Input(bind value: saisie, onChange: chercher(saisie))`. Seule `value` d'`Input` se lie pour l'instant.
 
 ## Vérification
 

@@ -153,7 +153,7 @@ codes! {
     UI_NAME_CONFLICT = "MCF0708", Ui, Error, "Nom de composant, de style ou de membre déjà utilisé.";
     UI_WINDOW_NOT_ROOT = "MCF0709", Ui, Error, "`Window` doit être le seul élément racine d'une `view`.";
     UI_INVALID_ACTION = "MCF0710", Ui, Error, "Action d'événement invalide : appel sans résultat, `emit` ou affectation d'un `state`.";
-    UI_INVALID_BIND = "MCF0711", Ui, Error, "`bind` invalide : propriété non liable, ou cible qui n'est pas un `state` ou une globale modifiable du bon type.";
+    UI_INVALID_BIND = "MCF0711", Ui, Error, "`bind` invalide : propriété non liable, ou cible qui n'est pas un `state` `String` du composant.";
     UI_VALUE_OUT_OF_RANGE = "MCF0712", Ui, Error, "Valeur de style hors de sa plage.";
     UI_MISSING_VIEW = "MCF0713", Ui, Error, "Composant `ui` sans `view`.";
     UI_RECURSIVE_COMPONENT = "MCF0714", Ui, Error, "Composant qui s'inclut lui-même sans condition : il ne s'afficherait jamais.";
