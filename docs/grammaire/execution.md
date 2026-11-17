@@ -13,7 +13,7 @@ mcf run mon_projet/ --strict    # les avertissements bloquent aussi l'exécution
 
 1. Les globales reçoivent leur valeur : fichiers dans l'ordre alphabétique, puis ordre de déclaration (scopes compris).
 2. `func main(): Void` est appelée (voir [résolution des noms](resolution-des-noms.md#point-dentrée)).
-3. Le programme s'arrête à la fin de `main`, ou à la première erreur d'exécution.
+3. Le programme s'arrête quand `main` **et toutes les tâches** lancées par `start` sont terminées, ou à la première erreur d'exécution (dans n'importe quelle tâche).
 
 ## Valeurs
 
@@ -50,7 +50,54 @@ _copy.members.push("Max");     // _a.members est inchangé
 
 ## Événements
 
-`emit` exécute **tout de suite** chaque gestionnaire `on` de l'événement, dans l'ordre du projet (fichiers puis déclarations), avant de passer à l'instruction suivante. Plusieurs `on` pour un même événement sont permis (D32). L'asynchrone arrive en phase 8.
+`emit` exécute **tout de suite** chaque gestionnaire `on` de l'événement, dans l'ordre du projet (fichiers puis déclarations), avant de passer à l'instruction suivante. Plusieurs `on` pour un même événement sont permis (D32). Un `emit` dans une tâche exécute les gestionnaires dans cette tâche.
+
+## Tâches
+
+Une fonction ordinaire peut tourner en tâche : pas de mot-clé `async` sur les fonctions (D41).
+
+```mcf
+func load(_id: Int): String {
+    sleep(100);                       // laisse tourner les autres tâches
+    return "user" + _id;
+}
+
+func main(): Void {
+    _a: Task<String> = start load(1); // lancée, main continue
+    _b: Task<String> = start load(2);
+    print(await _a + await _b);       // attend les résultats (~100 ms en tout)
+}
+```
+
+- `start appel(...)` évalue les arguments **tout de suite**, puis lance l'appel dans une nouvelle tâche et rend un `Task<T>`. La tâche ne démarre pas avant le prochain point de suspension de la tâche qui l'a lancée.
+- `await t` attend la fin de `t` et vaut son résultat. On peut attendre plusieurs fois la même tâche (même résultat).
+- Une tâche non attendue s'exécute quand même : le programme attend toutes les tâches avant de se terminer.
+- `Task` est une poignée : `_t2 = _t` désigne la même tâche ; `==` compare l'identité ; `duplicate` rend la même poignée. `print` affiche `Task#1`.
+
+### Une seule tâche à la fois, ordre déterministe
+
+Les tâches ne s'exécutent **jamais en même temps** : une tâche garde la main jusqu'à un **point de suspension** (`sleep`, `await`, fin de la tâche). Il n'y a donc pas de course de données sur les globales et les valeurs partagées, et un même programme affiche toujours la même chose.
+
+À chaque point de suspension, la suivante est choisie ainsi :
+
+1. les tâches prêtes, dans l'ordre où elles le sont devenues (`start`, fin d'un `await`, annulation) ;
+2. sinon, la tâche dont le `sleep` se termine le plus tôt sur une horloge **virtuelle** (somme des durées demandées), à égalité dans l'ordre des appels à `sleep`. Le programme attend réellement l'échéance : `sleep(ms)` dure toujours au moins `ms`.
+
+`sleep(0)` laisse passer les tâches prêtes. Une boucle de calcul sans point de suspension garde la main jusqu'au bout.
+
+### Annulation
+
+`_t.cancel()` demande l'arrêt de `_t` ; `_t.isDone()` dit si elle est terminée ou annulée.
+
+- Sans effet sur une tâche déjà terminée.
+- Une tâche qui dort ou attend est réveillée et s'arrête aussitôt qu'elle reprend la main ; une tâche qui calcule s'arrête à son prochain point de suspension ; une tâche pas encore démarrée ne démarre pas.
+- `await` d'une tâche annulée → MCF0410.
+
+### Erreurs
+
+- Une erreur dans une tâche **arrête tout le programme** (code de sortie 3), comme dans `main` : rien n'échoue en silence. La pile d'appels remonte jusqu'au `start`.
+- Toutes les tâches s'attendent mutuellement (`a` attend `b` qui attend `a`), ou une tâche s'attend elle-même → MCF0411.
+- Le système refuse de créer la tâche (ressources épuisées) → MCF0412.
 
 ## Affichage (`print`)
 
@@ -69,6 +116,7 @@ La concaténation `"texte" + valeur` utilise le même affichage.
 
 - Récursion : 10 000 appels imbriqués au maximum → MCF0406.
 - `sleep(ms)` : une durée négative → MCF0407.
+- Chaque tâche a sa propre limite de 10 000 appels imbriqués.
 
 ## Erreurs d'exécution
 

@@ -1,0 +1,4 @@
+// attendu: MCF0220
+func f(): Void {
+    _n: Int = await 3;
+}

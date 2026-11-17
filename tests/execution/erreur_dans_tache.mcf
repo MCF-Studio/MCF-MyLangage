@@ -1,0 +1,12 @@
+// erreur: MCF0401
+func divide(_n: Int): Int {
+    sleep(1);
+    return 10 / _n;
+}
+
+func main(): Void {
+    _t: Task<Int> = start divide(0);
+    print("avant");
+    sleep(100);
+    print("jamais affiché");
+}

@@ -3,10 +3,9 @@
 //! Les nombres, booléens, chaînes et variantes d'énumération sont copiés ; les tableaux, maps
 //! et structures sont **partagés** (DECISIONS D30) : `_b = _a;` désigne la même structure.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 /// Structure déclarée : son nom et ses champs dans l'ordre de déclaration.
 pub(crate) struct StructInfo {
@@ -30,17 +29,50 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
-    Str(Rc<str>),
+    Str(Arc<str>),
     Enum {
         id: usize,
         variant: usize,
     },
-    Array(Rc<RefCell<Vec<Value>>>),
+    Array(Arc<ValueCell<Vec<Value>>>),
     /// Paires clé → valeur dans l'ordre d'insertion.
-    Map(Rc<RefCell<Vec<(Value, Value)>>>),
-    Struct(Rc<RefCell<StructValue>>),
+    Map(Arc<ValueCell<Vec<(Value, Value)>>>),
+    Struct(Arc<ValueCell<StructValue>>),
+    /// Tâche lancée par `start` : numéro de la tâche dans l'ordonnanceur (une poignée, pas
+    /// un contenu : la copier ou la comparer porte sur la même tâche).
+    Task(usize),
     /// Résultat d'un appel de fonction `Void`.
     Void,
+}
+
+/// Contenu partagé d'une structure, d'un tableau ou d'une map. S'emprunte comme un `RefCell`,
+/// mais peut passer d'une tâche à l'autre (chaque tâche a son fil, voir `lib.rs`).
+///
+/// Une seule tâche s'exécute à la fois et aucun emprunt n'est gardé pendant l'exécution de code
+/// MCF : un emprunt déjà pris est donc forcément un emprunt imbriqué, un bug de l'interpréteur.
+/// Il provoque une panique explicite, jamais un blocage silencieux.
+#[derive(Debug)]
+pub struct ValueCell<T>(Mutex<T>);
+
+impl<T> ValueCell<T> {
+    pub fn new(value: T) -> Self {
+        ValueCell(Mutex::new(value))
+    }
+
+    pub fn borrow(&self) -> MutexGuard<'_, T> {
+        match self.0.try_lock() {
+            Ok(guard) => guard,
+            // Une panique a déjà interrompu l'exécution : on laisse l'arrêt se poursuivre.
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                panic!("valeur MCF empruntée deux fois en même temps (bug de l'interpréteur)")
+            }
+        }
+    }
+
+    pub fn borrow_mut(&self) -> MutexGuard<'_, T> {
+        self.borrow()
+    }
 }
 
 #[derive(Debug)]
@@ -51,19 +83,19 @@ pub struct StructValue {
 
 impl Value {
     pub fn new_array(items: Vec<Value>) -> Value {
-        Value::Array(Rc::new(RefCell::new(items)))
+        Value::Array(Arc::new(ValueCell::new(items)))
     }
 
     pub fn new_map() -> Value {
-        Value::Map(Rc::new(RefCell::new(Vec::new())))
+        Value::Map(Arc::new(ValueCell::new(Vec::new())))
     }
 
     /// Adresse du contenu partagé, pour détecter les cycles.
     fn shared_ptr(&self) -> Option<usize> {
         match self {
-            Value::Array(a) => Some(Rc::as_ptr(a) as *const u8 as usize),
-            Value::Map(m) => Some(Rc::as_ptr(m) as *const u8 as usize),
-            Value::Struct(s) => Some(Rc::as_ptr(s) as *const u8 as usize),
+            Value::Array(a) => Some(Arc::as_ptr(a) as *const u8 as usize),
+            Value::Map(m) => Some(Arc::as_ptr(m) as *const u8 as usize),
+            Value::Struct(s) => Some(Arc::as_ptr(s) as *const u8 as usize),
             _ => None,
         }
     }
@@ -108,7 +140,7 @@ fn copy_in(v: &Value, done: &mut HashMap<usize, Value>) -> Value {
         }
         Value::Struct(s) => {
             let id = s.borrow().id;
-            let copy = Value::Struct(Rc::new(RefCell::new(StructValue {
+            let copy = Value::Struct(Arc::new(ValueCell::new(StructValue {
                 id,
                 fields: Vec::new(),
             })));
@@ -150,12 +182,14 @@ fn equal_in(a: &Value, b: &Value, assumed: &mut Vec<(usize, usize)>) -> bool {
                 variant: v2,
             },
         ) => id == id2 && variant == v2,
+        // Copies superficielles : aucun emprunt n'est gardé pendant la récursion (un tableau
+        // peut se contenir lui-même).
         (Value::Array(x), Value::Array(y)) => {
-            let (x, y) = (x.borrow(), y.borrow());
+            let (x, y) = (x.borrow().clone(), y.borrow().clone());
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(i, j)| equal_in(i, j, assumed))
         }
         (Value::Map(x), Value::Map(y)) => {
-            let (x, y) = (x.borrow(), y.borrow());
+            let (x, y) = (x.borrow().clone(), y.borrow().clone());
             x.len() == y.len()
                 && x.iter().all(|(k, v)| {
                     y.iter()
@@ -164,14 +198,22 @@ fn equal_in(a: &Value, b: &Value, assumed: &mut Vec<(usize, usize)>) -> bool {
                 })
         }
         (Value::Struct(x), Value::Struct(y)) => {
-            let (x, y) = (x.borrow(), y.borrow());
-            x.id == y.id
-                && x.fields
+            let (xid, xf) = {
+                let x = x.borrow();
+                (x.id, x.fields.clone())
+            };
+            let (yid, yf) = {
+                let y = y.borrow();
+                (y.id, y.fields.clone())
+            };
+            xid == yid
+                && xf
                     .iter()
-                    .zip(y.fields.iter())
+                    .zip(yf.iter())
                     .all(|(i, j)| equal_in(i, j, assumed))
         }
         (Value::Void, Value::Void) => true,
+        (Value::Task(x), Value::Task(y)) => x == y,
         _ => false,
     }
 }
@@ -210,6 +252,9 @@ fn write_value(
             let _ = write!(out, "{:?}", &**s);
         }
         Value::Str(s) => out.push_str(s),
+        Value::Task(id) => {
+            let _ = write!(out, "Task#{id}");
+        }
         Value::Enum { id, variant } => {
             let e = &names.enums[*id];
             let _ = write!(out, "{}.{}", e.name, e.variants[*variant]);
@@ -306,16 +351,18 @@ mod tests {
         let (Value::Array(o), Value::Array(c)) = (&outer, &copy) else {
             unreachable!()
         };
-        assert!(!Rc::ptr_eq(o, c));
-        let (Value::Array(c0), Value::Array(c1)) = (&c.borrow()[0], &c.borrow()[1]) else {
+        assert!(!Arc::ptr_eq(o, c));
+        let items = c.borrow().clone();
+        let (Value::Array(c0), Value::Array(c1)) = (&items[0], &items[1]) else {
             unreachable!()
         };
         // Le partage interne est reproduit, mais pas avec l'original.
-        assert!(Rc::ptr_eq(c0, c1));
-        let Value::Array(o0) = &o.borrow()[0] else {
+        assert!(Arc::ptr_eq(c0, c1));
+        let first = o.borrow()[0].clone();
+        let Value::Array(o0) = &first else {
             unreachable!()
         };
-        assert!(!Rc::ptr_eq(o0, c0));
+        assert!(!Arc::ptr_eq(o0, c0));
         assert!(equal(&outer, &copy));
     }
 

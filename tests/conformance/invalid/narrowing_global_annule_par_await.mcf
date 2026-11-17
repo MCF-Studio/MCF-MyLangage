@@ -1,0 +1,14 @@
+// attendu: MCF0221
+state: Bool, Int = 1;
+
+func reset(): Void {
+    state = false;
+}
+
+func f(): Void {
+    if (state is Int) then {
+        _t: Task<Void> = start reset();
+        await _t;
+        print(state + 1);
+    }
+}

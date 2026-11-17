@@ -1,0 +1,12 @@
+// erreur: MCF0410
+func slow(): Int {
+    sleep(60000);
+    return 1;
+}
+
+func main(): Void {
+    _t: Task<Int> = start slow();
+    _t.cancel();
+    print("annulée");
+    print(await _t);
+}

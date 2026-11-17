@@ -1,0 +1,17 @@
+func slow(): Int {
+    sleep(60000);
+    print("jamais affiché");
+    return 1;
+}
+
+func main(): Void {
+    _t: Task<Int> = start slow();
+    sleep(5);
+    print(_t.isDone());
+    _t.cancel();
+    // L'annulation prend effet au prochain point de suspension de la tâche annulée.
+    sleep(0);
+    print(_t.isDone());
+    _t.cancel();
+    print("pas d'attente de 60 s");
+}

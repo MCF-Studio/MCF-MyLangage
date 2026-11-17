@@ -77,6 +77,6 @@ func show(): Void {
 
 ## Types natifs reconnus
 
-`Bool Int Float String Char Byte Bytes Array Map DateTime Void`
+`Bool Int Float String Char Byte Bytes Array Map Task DateTime Void`
 
 Les structures, énumérations et alias de types viendront avec les phases suivantes.

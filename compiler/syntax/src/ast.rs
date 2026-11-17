@@ -302,6 +302,14 @@ pub enum ExprKind {
     Paren {
         expr: Box<Expr>,
     },
+    /// `start f(x)` : lance l'appel dans une nouvelle tâche, vaut `Task<T>` (DECISIONS D41).
+    Start {
+        call: Box<Expr>,
+    },
+    /// `await t` : attend la fin de la tâche `t` et vaut son résultat.
+    Await {
+        expr: Box<Expr>,
+    },
     /// `User { id: 1, name: "Alex" }`
     StructLit {
         path: Path,

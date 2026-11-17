@@ -1,0 +1,4 @@
+// attendu: MCF0241
+func f(_t: Task<Int>): Void {
+    _t.join();
+}

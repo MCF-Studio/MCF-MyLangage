@@ -1,0 +1,9 @@
+// attendu: MCF0221
+state: Bool, Int = 1;
+
+func f(): Void {
+    if (state is Int) then {
+        sleep(10);
+        print(state + 1);
+    }
+}

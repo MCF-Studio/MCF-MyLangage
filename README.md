@@ -5,7 +5,7 @@
 **Un langage strict, lisible d'un coup d'œil, pensé pour les humains *et* les IA — et incapable de vous espionner.**
 
 [![CI](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml/badge.svg)](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml)
-![Statut](https://img.shields.io/badge/statut-phase%206%20%C2%B7%20ex%C3%A9cution-orange)
+![Statut](https://img.shields.io/badge/statut-phase%208%20%C2%B7%20t%C3%A2ches-orange)
 [![Licence](https://img.shields.io/badge/licence-GPL--3.0-blue)](LICENSE)
 ![Rust](https://img.shields.io/badge/compilateur-Rust-b7410e)
 ![Contributions](https://img.shields.io/badge/contributions-bienvenues-brightgreen)
@@ -96,7 +96,7 @@ cargo build --release
 ./target/release/mcf describe keywords
 ```
 
-> Aujourd'hui MCF **analyse** le code (syntaxe, noms, scopes, imports entre fichiers, types, DualType, structures et énumérations) et l'**exécute** avec un interpréteur (`mcf run`). Le backend natif, l'asynchrone et les interfaces viendront ensuite : voir la [feuille de route](ROADMAP.md).
+> Aujourd'hui MCF **analyse** le code (syntaxe, noms, scopes, imports entre fichiers, types, DualType, structures et énumérations) et l'**exécute** avec un interpréteur (`mcf run`), tâches concurrentes comprises (`start` / `await`). Le backend natif et les interfaces viendront ensuite : voir la [feuille de route](ROADMAP.md).
 
 ## 🤝 Participer
 

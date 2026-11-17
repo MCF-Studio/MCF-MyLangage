@@ -38,7 +38,7 @@ Le compilateur connaît le type actif :
 Le narrowing est **annulé** quand il pourrait devenir faux (règle conservatrice : refuser plutôt que se tromper) :
 
 - en entrant dans une boucle dont le corps affecte la variable (deuxième tour) ;
-- pour les **globales**, après tout appel de fonction MCF ou `emit` (la fonction ou le gestionnaire peut la modifier) ;
+- pour les **globales**, après tout appel de fonction MCF ou `emit` (la fonction ou le gestionnaire peut la modifier), et après `sleep` ou `await` (les autres tâches s'exécutent pendant ce temps, D41) ;
 - après la sortie du bloc où une affectation l'a établi.
 
 `x is T` où `T` est impossible → MCF0222 ; toujours vrai → MCF0223 (avertissement).
@@ -84,6 +84,19 @@ Elles s'appellent avec `.` sur une valeur (D38) ; un nom inconnu → MCF0241 ave
 | `Map<K, V>` | `has(_k: K)` | `Bool` |
 | `Map<K, V>` | `remove(_k: K)` | `Bool` (`false` si la clé n'existait pas) |
 | `Map<K, V>` | `keys()` / `values()` | `Array<K>` / `Array<V>`, ordre d'insertion |
+| `Task<T>` | `cancel()` | `Void` (voir [tâches](execution.md#tâches)) |
+| `Task<T>` | `isDone()` | `Bool` (terminée ou annulée) |
+
+## Tâches
+
+| Expression | Type | Règle |
+|---|---|---|
+| `start f(x)` | `Task<T>` si `f` retourne `T` (`Task<Void>` pour une fonction `Void`) | l'opérande doit être un appel : fonction, méthode de structure, méthode ou fonction native (MCF0121) |
+| `await t` | `T` si `t: Task<T>` | autre chose qu'une tâche → MCF0220 |
+
+- `Task` seul accepte toute tâche (résultat non vérifié), comme `Array` seul.
+- `Task<Void>` est permis (seul cas où `Void` sert d'argument de type) ; `await` d'une `Task<Void>` ne produit pas de valeur.
+- DualType de deux tâches (`Task<Int>, Task<String>`) → MCF0203, comme deux collections de même sorte.
 
 ## `duplicate(valeur)`
 

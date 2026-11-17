@@ -1,0 +1,11 @@
+// attendu: MCF0221
+state: Bool, Int = 1;
+
+func f(_t: Task<Void>): Void {
+    if (state is Int) then {
+        while (true) do {
+            print(state + 1);
+            await _t;
+        }
+    }
+}

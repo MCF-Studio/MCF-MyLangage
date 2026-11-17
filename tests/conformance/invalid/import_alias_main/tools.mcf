@@ -1,5 +1,5 @@
 scope Tools {
-    func start(): Void {
+    func launch(): Void {
         print("go");
     }
 }

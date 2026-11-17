@@ -1,0 +1,4 @@
+// attendu: MCF0121
+func f(): Void {
+    _t: Task<Int> = start 3;
+}

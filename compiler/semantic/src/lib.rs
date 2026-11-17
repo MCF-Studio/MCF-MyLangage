@@ -21,7 +21,8 @@ pub use types::Ty;
 
 /// Types natifs connus (cahier des charges 1.2, §5 ; `Bytes` vient de §11.1).
 pub const BUILTIN_TYPES: &[&str] = &[
-    "Bool", "Int", "Float", "String", "Char", "Byte", "Bytes", "Array", "Map", "DateTime", "Void",
+    "Bool", "Int", "Float", "String", "Char", "Byte", "Bytes", "Array", "Map", "Task", "DateTime",
+    "Void",
 ];
 
 pub struct Source {
@@ -340,7 +341,7 @@ impl Analyzer {
             },
         };
         let expected_args = match base {
-            Ty::Array(_) => &[0usize, 1][..],
+            Ty::Array(_) | Ty::Task(_) => &[0usize, 1][..],
             Ty::Map(..) => &[0, 2][..],
             _ => &[0][..],
         };
@@ -372,7 +373,8 @@ impl Analyzer {
             .collect();
         if report {
             for (arg, ty) in r.args.iter().zip(&args) {
-                if *ty == Ty::Void {
+                // `Task<Void>` : tâche qui ne produit pas de valeur.
+                if *ty == Ty::Void && !matches!(base, Ty::Task(_)) {
                     self.report(Diagnostic::new(
                         &codes::VOID_NOT_ALLOWED,
                         arg.span,
@@ -383,6 +385,7 @@ impl Analyzer {
         }
         match base {
             Ty::Array(_) if args.len() == 1 => Ty::Array(Box::new(args.remove(0))),
+            Ty::Task(_) if args.len() == 1 => Ty::Task(Box::new(args.remove(0))),
             Ty::Map(..) if args.len() == 2 => {
                 let v = args.remove(1);
                 Ty::Map(Box::new(args.remove(0)), Box::new(v))
@@ -429,14 +432,16 @@ impl Analyzer {
                     a.clone()
                 } else if matches!(
                     (a, b),
-                    (Ty::Array(_), Ty::Array(_)) | (Ty::Map(..), Ty::Map(..))
+                    (Ty::Array(_), Ty::Array(_))
+                        | (Ty::Map(..), Ty::Map(..))
+                        | (Ty::Task(_), Ty::Task(_))
                 ) {
                     if report {
                         self.report(
                             Diagnostic::new(
                                 &codes::DUPLICATE_DUAL_TYPE,
                                 decl.span,
-                                format!("DualType `{a}, {b}` : deux collections de même sorte ne se distinguent pas avec `is`"),
+                                format!("DualType `{a}, {b}` : deux collections ou tâches de même sorte ne se distinguent pas avec `is`"),
                             )
                             .suggestion("garder une seule collection, ou combiner une collection et un type simple"),
                         );
@@ -1386,8 +1391,10 @@ impl Analyzer {
     fn scan_expr(&self, e: &Expr, table: usize, calls: &mut bool) {
         match &e.kind {
             ExprKind::Call { callee, args } => {
+                // `sleep` laisse tourner les autres tâches, qui peuvent modifier les globales.
                 let builtin = matches!(&callee.kind, ExprKind::Name { ident }
-                    if matches!(self.lookup(&ident.name, table), Some(Resolved::Sym(Sym::Builtin(_)))));
+                    if matches!(self.lookup(&ident.name, table),
+                        Some(Resolved::Sym(Sym::Builtin(b))) if b != Builtin::Sleep));
                 if !builtin {
                     *calls = true;
                 }
@@ -1397,6 +1404,11 @@ impl Analyzer {
                 }
             }
             ExprKind::Member { object, .. } => self.scan_expr(object, table, calls),
+            ExprKind::Start { call } => self.scan_expr(call, table, calls),
+            ExprKind::Await { expr } => {
+                *calls = true;
+                self.scan_expr(expr, table, calls);
+            }
             ExprKind::Index { object, index } => {
                 self.scan_expr(object, table, calls);
                 self.scan_expr(index, table, calls);
@@ -1720,6 +1732,46 @@ impl Analyzer {
                 self.check_struct_lit(path, fields, expr.span, table)
             }
             ExprKind::Call { callee, args } => self.check_call(expr, callee, args, table),
+            ExprKind::Start { call } => {
+                let ty = match &call.kind {
+                    ExprKind::Call { .. } => match self.check_any(call, table).ty {
+                        Ty::Unknown => Ty::Task(Box::new(Ty::Unknown)),
+                        t => Ty::Task(Box::new(t)),
+                    },
+                    // Déjà signalé par le parser (MCF0121).
+                    _ => {
+                        self.check_any(call, table);
+                        Ty::Unknown
+                    }
+                };
+                Typed::value(ty)
+            }
+            ExprKind::Await { expr: inner } => {
+                let t = self.check_expr(inner, table).ty;
+                let ty = match t {
+                    Ty::Task(r) => *r,
+                    Ty::Unknown => Ty::Unknown,
+                    ref d if d.is_dual() => {
+                        self.not_narrowed_or_invalid(d, inner.span, "await");
+                        Ty::Unknown
+                    }
+                    other => {
+                        self.report(
+                            Diagnostic::new(
+                                &codes::TYPE_MISMATCH,
+                                inner.span,
+                                "`await` attend une tâche lancée par `start`",
+                            )
+                            .expected("Task<...>")
+                            .received(other.to_string()),
+                        );
+                        Ty::Unknown
+                    }
+                };
+                // Pendant l'attente, les autres tâches peuvent modifier les globales.
+                self.forget_global_narrowings();
+                Typed::value(ty)
+            }
             ExprKind::Index { object, index } => {
                 let obj = self.check_expr(object, table);
                 let idx = self.check_expr(index, table);
@@ -2114,7 +2166,11 @@ impl Analyzer {
                             )
                             .received("Void"),
                         ),
-                        Builtin::Sleep => self.expect_assignable(t, &Ty::Int, *span),
+                        Builtin::Sleep => {
+                            self.expect_assignable(t, &Ty::Int, *span);
+                            // Pendant la pause, les autres tâches peuvent modifier les globales.
+                            self.forget_global_narrowings();
+                        }
                         _ => {}
                     }
                 }

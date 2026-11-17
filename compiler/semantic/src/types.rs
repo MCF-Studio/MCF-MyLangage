@@ -17,6 +17,8 @@ pub enum Ty {
     /// `Array` seul = `Array<Unknown>` (élément non précisé).
     Array(Box<Ty>),
     Map(Box<Ty>, Box<Ty>),
+    /// Tâche lancée par `start` ; `Task` seul = `Task<Unknown>`. `Task<Void>` est permis.
+    Task(Box<Ty>),
     /// DualType : exactement deux types distincts, jamais imbriqués.
     Dual(Box<Ty>, Box<Ty>),
     /// Structure déclarée par `struct` (identifiant interne + nom pour les messages).
@@ -48,6 +50,7 @@ impl Ty {
             "Void" => Ty::Void,
             "Array" => Ty::Array(Box::new(Ty::Unknown)),
             "Map" => Ty::Map(Box::new(Ty::Unknown), Box::new(Ty::Unknown)),
+            "Task" => Ty::Task(Box::new(Ty::Unknown)),
             _ => return None,
         })
     }
@@ -76,7 +79,7 @@ impl Ty {
     pub fn same(&self, other: &Ty) -> bool {
         match (self, other) {
             (Ty::Unknown, _) | (_, Ty::Unknown) => true,
-            (Ty::Array(a), Ty::Array(b)) => a.same(b),
+            (Ty::Array(a), Ty::Array(b)) | (Ty::Task(a), Ty::Task(b)) => a.same(b),
             (Ty::Map(k1, v1), Ty::Map(k2, v2)) => k1.same(k2) && v1.same(v2),
             (Ty::Dual(a1, b1), Ty::Dual(a2, b2)) => {
                 (a1.same(a2) && b1.same(b2)) || (a1.same(b2) && b1.same(a2))
@@ -114,6 +117,8 @@ pub fn native_method(recv: &Ty, name: &str) -> Option<(Vec<Ty>, Ty)> {
         (Ty::Map(k, _), "remove") => (vec![(**k).clone()], Ty::Bool),
         (Ty::Map(k, _), "keys") => (vec![], Ty::Array(k.clone())),
         (Ty::Map(_, v), "values") => (vec![], Ty::Array(v.clone())),
+        (Ty::Task(_), "cancel") => (vec![], Ty::Void),
+        (Ty::Task(_), "isDone") => (vec![], Ty::Bool),
         _ => return None,
     })
 }
@@ -124,6 +129,7 @@ pub fn native_method_names(recv: &Ty) -> &'static [&'static str] {
         Ty::Array(_) => &["length", "push", "pop", "removeAt", "contains"],
         Ty::Map(..) => &["length", "has", "remove", "keys", "values"],
         Ty::String => &["length"],
+        Ty::Task(_) => &["cancel", "isDone"],
         _ => &[],
     }
 }
@@ -144,6 +150,8 @@ impl fmt::Display for Ty {
             Ty::Array(e) => write!(f, "Array<{e}>"),
             Ty::Map(k, v) if k.is_unknown() && v.is_unknown() => write!(f, "Map"),
             Ty::Map(k, v) => write!(f, "Map<{k}, {v}>"),
+            Ty::Task(t) if t.is_unknown() => write!(f, "Task"),
+            Ty::Task(t) => write!(f, "Task<{t}>"),
             Ty::Dual(a, b) => write!(f, "{a}, {b}"),
             Ty::Struct { name, .. } | Ty::Enum { name, .. } => write!(f, "{name}"),
             Ty::Unknown => write!(f, "?"),

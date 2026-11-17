@@ -49,7 +49,9 @@ Relational      = Additive [ ( "<" | ">" | "<=" | ">=" ) Additive
                            | "is" TypeRef ] ;                          (* non associatif *)
 Additive        = Multiplicative { ( "+" | "-" ) Multiplicative } ;
 Multiplicative  = Unary { ( "*" | "/" | "%" ) Unary } ;
-Unary           = ( "!" | "-" ) Unary | Postfix ;
+Unary           = ( "!" | "-" | "await" ) Unary
+                | "start" Postfix                                      (* un appel : MCF0121 *)
+                | Postfix ;
 Postfix         = Primary { "(" [ Args ] ")" | "." Ident | "[" Expr "]" | StructLit } ;
 StructLit       = "{" [ Ident ":" Expr { "," Ident ":" Expr } [ "," ] ] "}" ;
                   (* seulement après un chemin global `A` / `A.B`, et si `{` est suivi
@@ -71,7 +73,7 @@ Primary         = Int | Float | String | "true" | "false"
 | 4 | `<` `>` `<=` `>=` `is` | **non associatif** (`0 < x < 10` → MCF0113) |
 | 5 | `+` `-` | gauche |
 | 6 | `*` `/` `%` | gauche |
-| 7 | `!` `-` unaires | droite |
+| 7 | `!` `-` `await` `start` unaires | droite |
 | 8 | appel, `.membre`, `[index]` | gauche |
 
 ## Règles contextuelles vérifiées par le parser
@@ -86,4 +88,5 @@ Primary         = Int | Float | String | "true" | "false"
 | Instruction exécutable au niveau module | MCF0115 |
 | `func`, `scope`, `struct`, `enum`, `event`, `import`, `on` dans un bloc | MCF0116 |
 | Champ de structure préfixé `_` | MCF0120 |
+| `start` suivi d'autre chose qu'un appel (`start 3`, `start f`) | MCF0121 |
 | `then` / `do` manquant | MCF0117 / MCF0118 |

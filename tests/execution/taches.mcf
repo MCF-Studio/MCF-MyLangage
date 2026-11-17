@@ -1,0 +1,56 @@
+// Tâches (D41) : `start` lance, `await` attend ; une seule tâche s'exécute à la fois,
+// l'ordre est déterministe (tâches prêtes, puis minuteries par échéance).
+struct Counter {
+    value: Int;
+
+    func add(_n: Int): Int {
+        self.value = self.value + _n;
+        return self.value;
+    }
+}
+
+log: Array<String>;
+
+func load(_id: Int, _ms: Int): String {
+    sleep(_ms);
+    print("chargé " + _id);
+    return "user" + _id;
+}
+
+func tick(_name: String, _n: Int): Void {
+    _i: Int = 0;
+    while (_i < _n) do {
+        log.push(_name + _i);
+        sleep(0);
+        _i = _i + 1;
+    }
+}
+
+func main(): Void {
+    _a: Task<String> = start load(1, 30);
+    _b: Task<String> = start load(2, 10);
+    print("lancées");
+    print(await _a + " " + await _b);
+    print(_a.isDone());
+
+    // Entrelacement à chaque `sleep(0)`.
+    _x: Task<Void> = start tick("x", 3);
+    _y: Task<Void> = start tick("y", 2);
+    await _x;
+    await _y;
+    print(log);
+
+    // Méthode de structure, méthode native et fonction native dans une tâche.
+    _c: Counter = Counter { value: 10 };
+    _m: Task<Int> = start _c.add(5);
+    _items: Array<Int> = [1, 2];
+    _len: Task<Int> = start _items.length();
+    start print("tâche native");
+    print(await _m);
+    print(await _len);
+    print(_c.value);
+
+    // Une tâche non attendue se termine quand même avant la fin du programme.
+    start load(3, 5);
+    print("fin de main");
+}

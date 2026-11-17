@@ -657,6 +657,8 @@ impl Parser<'_> {
                 | K::Str(_)
                 | K::True
                 | K::SelfKw
+                | K::Start
+                | K::Await
                 | K::False
                 | K::LParen
                 | K::LBracket
@@ -1061,6 +1063,36 @@ impl Parser<'_> {
     }
 
     fn unary(&mut self) -> Expr {
+        if self.at(&K::Start) {
+            let start = self.bump().span;
+            let call = self.postfix();
+            if !matches!(call.kind, ExprKind::Call { .. } | ExprKind::Error) {
+                self.diags.push(
+                    Diagnostic::new(
+                        &codes::START_REQUIRES_CALL,
+                        call.span,
+                        "`start` lance un appel de fonction dans une nouvelle tâche",
+                    )
+                    .expected("start fonction(arguments)"),
+                );
+            }
+            return Expr {
+                span: start.to(call.span),
+                kind: ExprKind::Start {
+                    call: Box::new(call),
+                },
+            };
+        }
+        if self.at(&K::Await) {
+            let start = self.bump().span;
+            let inner = self.unary();
+            return Expr {
+                span: start.to(inner.span),
+                kind: ExprKind::Await {
+                    expr: Box::new(inner),
+                },
+            };
+        }
         let op = match self.peek() {
             K::Bang => UnaryOp::Not,
             K::Minus => UnaryOp::Neg,

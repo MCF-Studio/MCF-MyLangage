@@ -1,0 +1,8 @@
+// attendu: MCF0220
+func compute(): Int {
+    return 1;
+}
+
+func f(): Void {
+    _t: Task<String> = start compute();
+}

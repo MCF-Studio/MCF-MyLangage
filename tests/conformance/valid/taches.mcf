@@ -1,0 +1,41 @@
+// Tâches (D41) : `Task<T>`, `start`, `await`, `cancel()`, `isDone()`.
+struct Job {
+    name: String;
+    task: Task<Int>;
+
+    func size(): Int {
+        return self.name.length();
+    }
+}
+
+func compute(_n: Int): Int {
+    sleep(1);
+    return _n * 2;
+}
+
+func notify(_text: String): Void {
+    print(_text);
+}
+
+func pick(_v: Task<Int>, Int): Int {
+    if (_v is Int) then {
+        return _v;
+    }
+    return 0;
+}
+
+func run(): Void {
+    _t: Task<Int> = start compute(21);
+    _v: Task<Void> = start notify("ok");
+    _any: Task = _t;
+    _job: Job = Job { name: "calcul", task: _t };
+    _s: Task<Int> = start _job.size();
+    _l: Task<Int> = start _job.name.length();
+    await _v;
+    _total: Int = await _t + await _job.task + await _s + await _l;
+    if (!_t.isDone()) then {
+        _t.cancel();
+    }
+    start sleep(10);
+    print(_total + pick(_t));
+}

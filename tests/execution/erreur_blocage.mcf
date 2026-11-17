@@ -1,0 +1,18 @@
+// erreur: MCF0411
+a: Task<Int>;
+b: Task<Int>;
+
+func first(): Int {
+    sleep(1);
+    return await b;
+}
+
+func second(): Int {
+    return await a;
+}
+
+func main(): Void {
+    a = start first();
+    b = start second();
+    print(await a);
+}

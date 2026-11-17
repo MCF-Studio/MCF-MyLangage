@@ -35,6 +35,8 @@ pub enum TokenKind {
     Continue,
     Is,
     SelfKw,
+    Start,
+    Await,
     True,
     False,
 
@@ -108,6 +110,8 @@ impl TokenKind {
             Continue => "continue",
             Is => "is",
             SelfKw => "self",
+            Start => "start",
+            Await => "await",
             True => "true",
             False => "false",
             LBrace => "{",
@@ -163,6 +167,8 @@ pub const KEYWORDS: &[(&str, TokenKind)] = &[
     ("continue", TokenKind::Continue),
     ("is", TokenKind::Is),
     ("self", TokenKind::SelfKw),
+    ("start", TokenKind::Start),
+    ("await", TokenKind::Await),
     ("true", TokenKind::True),
     ("false", TokenKind::False),
 ];
@@ -173,7 +179,6 @@ pub const KEYWORDS: &[(&str, TokenKind)] = &[
 pub const RESERVED: &[&str] = &[
     "action",
     "async",
-    "await",
     "config",
     "const",
     "interface",
@@ -602,6 +607,10 @@ mod tests {
         assert_eq!(
             kinds("import A.b as c;"),
             vec![Import, Ident, Dot, Ident, As, Ident, Semi, Eof]
+        );
+        assert_eq!(
+            kinds("await start f()"),
+            vec![Await, Start, Ident, LParen, RParen, Eof]
         );
     }
 

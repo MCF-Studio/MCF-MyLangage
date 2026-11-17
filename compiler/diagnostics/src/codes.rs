@@ -60,6 +60,7 @@ codes! {
     MISSING_DO = "MCF0118", Syntax, Error, "Une boucle doit être suivie de `do`.";
     UNCLOSED_DELIMITER = "MCF0119", Syntax, Error, "Délimiteur ouvrant sans fermeture.";
     INVALID_FIELD_NAME = "MCF0120", Syntax, Error, "Un champ de structure s'écrit sans `_`.";
+    START_REQUIRES_CALL = "MCF0121", Syntax, Error, "`start` doit être suivi d'un appel de fonction.";
 
     UNDECLARED_NAME = "MCF0200", Semantic, Error, "Nom utilisé sans déclaration accessible.";
     DUPLICATE_DECLARATION = "MCF0201", Semantic, Error, "Nom déjà déclaré dans le même scope.";
@@ -111,5 +112,8 @@ codes! {
     INVALID_ARGUMENT = "MCF0407", Runtime, Error, "Argument refusé par une fonction native.";
     OUTPUT_ERROR = "MCF0408", Runtime, Error, "Écriture impossible sur la sortie.";
     EMPTY_COLLECTION = "MCF0409", Runtime, Error, "Retrait dans un tableau vide.";
+    TASK_CANCELLED = "MCF0410", Runtime, Error, "`await` sur une tâche annulée.";
+    DEADLOCK = "MCF0411", Runtime, Error, "Toutes les tâches s'attendent : le programme ne peut plus avancer.";
+    TASK_START_FAILED = "MCF0412", Runtime, Error, "Le système refuse de démarrer une nouvelle tâche.";
     INTERNAL_RUNTIME_ERROR = "MCF0499", Runtime, Error, "Erreur interne de l'interpréteur (à signaler).";
 }
