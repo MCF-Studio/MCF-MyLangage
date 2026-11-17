@@ -99,6 +99,7 @@ fn run_here<W: Write + Send>(modules: &[&Module], out: &mut W) -> Result<(), Box
             clock: 0,
             failure: None,
             aborted: false,
+            listeners: Vec::new(),
         }),
     };
     std::thread::scope(|scope| {
@@ -209,6 +210,14 @@ struct World<'o, W> {
     failure: Option<Box<RuntimeError>>,
     /// Une erreur s'est produite : toutes les tâches doivent s'arrêter.
     aborted: bool,
+    /// Abonnements `on X => f`, dans l'ordre de création (D45).
+    listeners: Vec<ListenerSlot>,
+}
+
+struct ListenerSlot {
+    event: String,
+    func: usize,
+    active: bool,
 }
 
 impl<W> World<'_, W> {
@@ -516,6 +525,7 @@ enum Kind {
     Array,
     Map,
     Task,
+    Listener,
     Struct(usize),
     Enum(usize),
     /// Type sans valeur possible aujourd'hui (`Char`, `Byte`, `Bytes`, `DateTime`).
@@ -1046,10 +1056,14 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     }
 
     /// `emit` : les gestionnaires `on` s'exécutent tout de suite, dans l'ordre du projet
-    /// (DECISIONS D32 ; l'asynchrone arrive en phase 8).
+    /// (DECISIONS D32).
     ///
     /// `start emit` (`background`) : chaque gestionnaire devient une tâche, lancée dans le
     /// même ordre ; l'émetteur continue aussitôt (D44).
+    ///
+    /// Les gestionnaires `on` fixes passent d'abord, puis les abonnements `on X => f` actifs,
+    /// dans l'ordre où ils ont été créés (D45). Un abonnement créé pendant l'`emit` attend le
+    /// suivant ; un abonnement arrêté pendant l'`emit` n'est plus appelé.
     fn emit(&mut self, event: &Path, args: Vec<Value>, background: bool, span: Span) -> Res<()> {
         let p = self.p;
         let name = path_text(event);
@@ -1065,6 +1079,26 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 self.spawn(job, called_at)?;
             } else {
                 self.run_handler(&name, index, args.clone(), called_at)?;
+            }
+        }
+        let subscribed: Vec<usize> = (0..self.w().listeners.len())
+            .filter(|&l| self.w().listeners[l].event == name)
+            .collect();
+        for l in subscribed {
+            let slot = &self.w().listeners[l];
+            if !slot.active {
+                continue;
+            }
+            let func = slot.func;
+            if background {
+                let job = Job::Func {
+                    id: func,
+                    receiver: None,
+                    args: args.clone(),
+                };
+                self.spawn(job, called_at)?;
+            } else {
+                self.call_func(func, None, args.clone(), Some(called_at))?;
             }
         }
         Ok(())
@@ -1164,6 +1198,13 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 Ok(Value::Void)
             }
             (Value::Task(t), "isDone", None) => Ok(Value::Bool(self.w().tasks[*t].finished())),
+            (Value::Listener(l), "stop", None) => {
+                self.wm().listeners[*l].active = false;
+                Ok(Value::Void)
+            }
+            (Value::Listener(l), "isActive", None) => {
+                Ok(Value::Bool(self.w().listeners[*l].active))
+            }
             (Value::Array(a), "length", None) => Ok(length(a.borrow().len())),
             (Value::Map(m), "length", None) => Ok(length(m.borrow().len())),
             (Value::Array(a), "push", Some(v)) => {
@@ -1605,6 +1646,20 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 let called_at = (self.frame().file, expr.span);
                 self.spawn(job, called_at)
             }
+            ExprKind::Listen { event, handler } => {
+                let Some(Entity::Func(func)) = self.resolve_path(handler) else {
+                    return Err(
+                        self.internal(handler.span, "abonnement à autre chose qu'une fonction")
+                    );
+                };
+                let w = self.wm();
+                w.listeners.push(ListenerSlot {
+                    event: path_text(event),
+                    func,
+                    active: true,
+                });
+                Ok(Value::Listener(w.listeners.len() - 1))
+            }
             ExprKind::Await { expr: inner } => match self.eval(inner)? {
                 Value::Task(t) => self.await_task(t, expr.span),
                 _ => {
@@ -1643,6 +1698,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 "Array" => Some(Kind::Array),
                 "Map" => Some(Kind::Map),
                 "Task" => Some(Kind::Task),
+                "Listener" => Some(Kind::Listener),
                 "Char" | "Byte" | "Bytes" | "DateTime" => Some(Kind::NoValue),
                 _ => None,
             };
@@ -1775,7 +1831,8 @@ fn value_is(v: &Value, kind: &Kind) -> bool {
         | (Value::Str(_), Kind::String)
         | (Value::Array(_), Kind::Array)
         | (Value::Map(_), Kind::Map)
-        | (Value::Task(_), Kind::Task) => true,
+        | (Value::Task(_), Kind::Task)
+        | (Value::Listener(_), Kind::Listener) => true,
         (Value::Struct(s), Kind::Struct(id)) => s.borrow().id == *id,
         (Value::Enum { id, .. }, Kind::Enum(k)) => id == k,
         _ => false,

@@ -1,0 +1,32 @@
+// `on Evenement => fonction` (D45) : abonnement dynamique, arrêté par `stop()`.
+event PlayerConnected(_id: Int);
+
+on PlayerConnected(_id) {
+    print("fixe " + _id);
+}
+
+func greet(_id: Int): Void {
+    print("bienvenue " + _id);
+}
+
+scope Stats {
+    count: Int = 0;
+
+    func track(_id: Int): Void {
+        count = count + 1;
+    }
+}
+
+func main(): Void {
+    emit PlayerConnected(1);
+    _welcome: Listener = on PlayerConnected => greet;
+    _stats: Listener = on PlayerConnected => Stats.track;
+    emit PlayerConnected(2);
+    _welcome.stop();
+    print(_welcome.isActive());
+    print(_stats.isActive());
+    emit PlayerConnected(3);
+    start emit PlayerConnected(4);
+    sleep(0);
+    print(Stats.count);
+}

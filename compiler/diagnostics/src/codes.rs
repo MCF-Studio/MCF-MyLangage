@@ -74,6 +74,7 @@ codes! {
     EVENT_ARITY_MISMATCH = "MCF0209", Semantic, Error, "Nombre de données d'événement incorrect.";
     ARGUMENT_COUNT_MISMATCH = "MCF0210", Semantic, Error, "Nombre d'arguments incorrect.";
     LOOP_CONTROL_OUTSIDE_LOOP = "MCF0211", Semantic, Error, "`break` ou `continue` hors d'une boucle.";
+    HANDLER_MISMATCH = "MCF0213", Semantic, Error, "La fonction abonnée ne correspond pas aux données de l'événement.";
     NOT_ASSIGNABLE = "MCF0212", Semantic, Error, "Une fonction, un scope ou une fonction native ne peut pas recevoir de valeur.";
 
     TYPE_MISMATCH = "MCF0220", Type, Error, "Le type de la valeur ne correspond pas au type attendu.";

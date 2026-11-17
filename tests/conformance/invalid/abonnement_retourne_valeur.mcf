@@ -1,0 +1,10 @@
+// attendu: MCF0213
+event Scored(_points: Int);
+
+func double(_points: Int): Int {
+    return _points * 2;
+}
+
+func f(): Void {
+    _l: Listener = on Scored => double;
+}

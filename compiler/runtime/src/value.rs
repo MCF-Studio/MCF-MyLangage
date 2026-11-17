@@ -41,6 +41,8 @@ pub enum Value {
     /// Tâche lancée par `start` : numéro de la tâche dans l'ordonnanceur (une poignée, pas
     /// un contenu : la copier ou la comparer porte sur la même tâche).
     Task(usize),
+    /// Abonnement créé par `on Evenement => fonction` : numéro dans la liste des abonnements.
+    Listener(usize),
     /// Résultat d'un appel de fonction `Void`.
     Void,
 }
@@ -213,7 +215,7 @@ fn equal_in(a: &Value, b: &Value, assumed: &mut Vec<(usize, usize)>) -> bool {
                     .all(|(i, j)| equal_in(i, j, assumed))
         }
         (Value::Void, Value::Void) => true,
-        (Value::Task(x), Value::Task(y)) => x == y,
+        (Value::Task(x), Value::Task(y)) | (Value::Listener(x), Value::Listener(y)) => x == y,
         _ => false,
     }
 }
@@ -254,6 +256,9 @@ fn write_value(
         Value::Str(s) => out.push_str(s),
         Value::Task(id) => {
             let _ = write!(out, "Task#{id}");
+        }
+        Value::Listener(id) => {
+            let _ = write!(out, "Listener#{id}");
         }
         Value::Enum { id, variant } => {
             let e = &names.enums[*id];

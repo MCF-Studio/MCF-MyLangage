@@ -59,6 +59,28 @@ emit Saved("a.txt");        // attend que tous les gestionnaires aient fini
 start emit Saved("b.txt");  // n'attend pas ; le programme attendra ces tâches avant de finir
 ```
 
+### Abonnements
+
+Les `on X(...) { }` sont fixes : déclarés au niveau du module, toujours actifs. Pour s'abonner et se désabonner pendant l'exécution, `on X => fonction` abonne une fonction existante et rend un `Listener` (D45) :
+
+```mcf
+func greet(_id: Int): Void {
+    print("Bienvenue " + _id);
+}
+
+func main(): Void {
+    _l: Listener = on PlayerConnected => greet;
+    emit PlayerConnected(1);   // Bienvenue 1
+    _l.stop();
+    emit PlayerConnected(2);   // rien
+}
+```
+
+- La fonction reçoit exactement les données de l'événement et retourne `Void` (MCF0209, MCF0213).
+- À chaque `emit` : les `on` fixes d'abord, puis les abonnements actifs dans l'ordre de leur création. Un abonnement créé pendant un `emit` compte à partir du suivant ; un abonnement arrêté pendant un `emit` n'est plus appelé.
+- `start emit` lance aussi chaque abonnement dans sa propre tâche.
+- `Listener` est une poignée (comme `Task`) : la copier désigne le même abonnement.
+
 ## Tâches
 
 Une fonction ordinaire peut tourner en tâche : pas de mot-clé `async` sur les fonctions (D41).

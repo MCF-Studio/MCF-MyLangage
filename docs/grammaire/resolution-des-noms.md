@@ -45,6 +45,7 @@ func main(): Void {
 | Import ambigu, en collision, ou même élément importé deux fois | MCF0208 |
 | Nombre de données d'événement incorrect | MCF0209 |
 | Nombre d'arguments incorrect | MCF0210 |
+| Fonction abonnée (`on X => f`) incompatible avec les données de l'événement, ou qui retourne une valeur | MCF0213 |
 | `break` / `continue` hors boucle | MCF0211 |
 | Affectation à une fonction ou un scope | MCF0212 |
 
@@ -77,6 +78,6 @@ func show(): Void {
 
 ## Types natifs reconnus
 
-`Bool Int Float String Char Byte Bytes Array Map Task DateTime Void`
+`Bool Int Float String Char Byte Bytes Array Map Task Listener DateTime Void`
 
 Les structures, énumérations et alias de types viendront avec les phases suivantes.

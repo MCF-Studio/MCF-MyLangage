@@ -59,3 +59,7 @@ Pas encore de littéral `Char` ni d'exposant (`1e3`) : à arbitrer.
 `= == != < > <= >= + - * / % && || !`
 
 `&` ou `|` seul → `MCF0001` avec suggestion `&&` / `||` (pas d'opérateurs bit à bit pour l'instant).
+
+## Symboles ajoutés
+
+`=>` : abonnement `on Evenement => fonction` (D45).

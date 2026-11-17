@@ -21,8 +21,8 @@ pub use types::Ty;
 
 /// Types natifs connus (cahier des charges 1.2, §5 ; `Bytes` vient de §11.1).
 pub const BUILTIN_TYPES: &[&str] = &[
-    "Bool", "Int", "Float", "String", "Char", "Byte", "Bytes", "Array", "Map", "Task", "DateTime",
-    "Void",
+    "Bool", "Int", "Float", "String", "Char", "Byte", "Bytes", "Array", "Map", "Task", "Listener",
+    "DateTime", "Void",
 ];
 
 pub struct Source {
@@ -1094,6 +1094,75 @@ impl Analyzer {
         }
     }
 
+    /// `on Evenement => fonction` : la fonction reçoit exactement les données de l'événement
+    /// et ne retourne rien (D45).
+    fn check_listener(&mut self, event: &Path, handler: &Path, table: usize) {
+        let callee = path_expr(handler);
+        let target = self.check_any(&callee, table);
+        let Resolved::Sym(Sym::Func { params, ret, .. }) = target.res else {
+            if !matches!(target.res, Resolved::Opaque) || !target.ty.is_unknown() {
+                self.report(
+                    Diagnostic::new(
+                        &codes::NOT_CALLABLE,
+                        handler.span,
+                        format!("`{}` n'est pas une fonction", path_text(handler)),
+                    )
+                    .suggestion("abonner une fonction : `on Evenement => nomDeFonction`"),
+                );
+            }
+            if !self.events.contains_key(&path_text(event)) {
+                self.check_event_use(event, 0, event.span, "");
+            }
+            return;
+        };
+        let name = path_text(event);
+        let expected = self.check_event_use(
+            event,
+            params.len(),
+            handler.span,
+            "paramètre(s) de fonction",
+        );
+        let signature = |tys: &[Ty]| {
+            tys.iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if expected.len() == params.len() {
+            for (data, param) in expected.iter().zip(&params) {
+                if !data.assignable_to(param) {
+                    self.report(
+                        Diagnostic::new(
+                            &codes::HANDLER_MISMATCH,
+                            handler.span,
+                            format!(
+                                "`{}` ne peut pas recevoir les données de `{name}`",
+                                path_text(handler)
+                            ),
+                        )
+                        .expected(format!("({})", signature(&expected)))
+                        .received(format!("({})", signature(&params))),
+                    );
+                    break;
+                }
+            }
+        }
+        if !matches!(ret, Ty::Void | Ty::Unknown) {
+            self.report(
+                Diagnostic::new(
+                    &codes::HANDLER_MISMATCH,
+                    handler.span,
+                    format!(
+                        "`{}` retourne `{ret}` : un gestionnaire d'événement ne retourne rien",
+                        path_text(handler)
+                    ),
+                )
+                .expected("Void")
+                .received(ret.to_string()),
+            );
+        }
+    }
+
     fn expect_assignable(&mut self, value: &Ty, target: &Ty, span: Span) {
         if value.assignable_to(target) {
             return;
@@ -1803,6 +1872,10 @@ impl Analyzer {
                 };
                 Typed::value(ty)
             }
+            ExprKind::Listen { event, handler } => {
+                self.check_listener(event, handler, table);
+                Typed::value(Ty::Listener)
+            }
             ExprKind::Await { expr: inner } => {
                 let t = self.check_expr(inner, table).ty;
                 let ty = match t {
@@ -2503,4 +2576,25 @@ fn other_text(e: &Expr) -> String {
         ExprKind::Paren { expr } => other_text(expr),
         _ => "la condition".into(),
     }
+}
+
+/// Expression équivalente à un chemin (`a`, `A.b`), pour le résoudre comme un nom écrit.
+fn path_expr(path: &Path) -> Expr {
+    let first = &path.segments[0];
+    let mut e = Expr {
+        span: first.span,
+        kind: ExprKind::Name {
+            ident: first.clone(),
+        },
+    };
+    for seg in &path.segments[1..] {
+        e = Expr {
+            span: e.span.to(seg.span),
+            kind: ExprKind::Member {
+                object: Box::new(e),
+                field: seg.clone(),
+            },
+        };
+    }
+    e
 }

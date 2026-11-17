@@ -51,6 +51,7 @@ Additive        = Multiplicative { ( "+" | "-" ) Multiplicative } ;
 Multiplicative  = Unary { ( "*" | "/" | "%" ) Unary } ;
 Unary           = ( "!" | "-" | "await" ) Unary
                 | "start" Postfix                                      (* un appel : MCF0121 *)
+                | "on" Path "=>" Path                                  (* abonnement → Listener *)
                 | Postfix ;
 Postfix         = Primary { "(" [ Args ] ")" | "." Ident | "[" Expr "]" | StructLit } ;
 StructLit       = "{" [ Ident ":" Expr { "," Ident ":" Expr } [ "," ] ] "}" ;
@@ -89,4 +90,5 @@ Primary         = Int | Float | String | "true" | "false"
 | `func`, `scope`, `struct`, `enum`, `event`, `import`, `on` dans un bloc | MCF0116 |
 | Champ de structure préfixé `_` | MCF0120 |
 | `start` suivi d'autre chose qu'un appel (`start 3`, `start f`) | MCF0121 |
+| Gestionnaire `on X(...) { }` dans un bloc (seul `on X => f` y est permis) | MCF0116 |
 | `then` / `do` manquant | MCF0117 / MCF0118 |

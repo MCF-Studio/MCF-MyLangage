@@ -86,6 +86,8 @@ Elles s'appellent avec `.` sur une valeur (D38) ; un nom inconnu → MCF0241 ave
 | `Map<K, V>` | `keys()` / `values()` | `Array<K>` / `Array<V>`, ordre d'insertion |
 | `Task<T>` | `cancel()` | `Void` (voir [tâches](execution.md#tâches)) |
 | `Task<T>` | `isDone()` | `Bool` (terminée ou annulée) |
+| `Listener` | `stop()` | `Void` (désabonne ; sans effet si déjà arrêté) |
+| `Listener` | `isActive()` | `Bool` |
 
 ## Tâches
 

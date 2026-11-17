@@ -1,0 +1,8 @@
+// attendu: MCF0205
+func show(_points: Int): Void {
+    print(_points);
+}
+
+func f(): Void {
+    on Scord => show;
+}

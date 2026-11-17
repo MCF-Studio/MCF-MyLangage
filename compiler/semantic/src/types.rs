@@ -19,6 +19,8 @@ pub enum Ty {
     Map(Box<Ty>, Box<Ty>),
     /// Tâche lancée par `start` ; `Task` seul = `Task<Unknown>`. `Task<Void>` est permis.
     Task(Box<Ty>),
+    /// Abonnement créé par `on Evenement => fonction`.
+    Listener,
     /// DualType : exactement deux types distincts, jamais imbriqués.
     Dual(Box<Ty>, Box<Ty>),
     /// Structure déclarée par `struct` (identifiant interne + nom pour les messages).
@@ -51,6 +53,7 @@ impl Ty {
             "Array" => Ty::Array(Box::new(Ty::Unknown)),
             "Map" => Ty::Map(Box::new(Ty::Unknown), Box::new(Ty::Unknown)),
             "Task" => Ty::Task(Box::new(Ty::Unknown)),
+            "Listener" => Ty::Listener,
             _ => return None,
         })
     }
@@ -119,6 +122,8 @@ pub fn native_method(recv: &Ty, name: &str) -> Option<(Vec<Ty>, Ty)> {
         (Ty::Map(_, v), "values") => (vec![], Ty::Array(v.clone())),
         (Ty::Task(_), "cancel") => (vec![], Ty::Void),
         (Ty::Task(_), "isDone") => (vec![], Ty::Bool),
+        (Ty::Listener, "stop") => (vec![], Ty::Void),
+        (Ty::Listener, "isActive") => (vec![], Ty::Bool),
         _ => return None,
     })
 }
@@ -130,6 +135,7 @@ pub fn native_method_names(recv: &Ty) -> &'static [&'static str] {
         Ty::Map(..) => &["length", "has", "remove", "keys", "values"],
         Ty::String => &["length"],
         Ty::Task(_) => &["cancel", "isDone"],
+        Ty::Listener => &["stop", "isActive"],
         _ => &[],
     }
 }
@@ -146,6 +152,7 @@ impl fmt::Display for Ty {
             Ty::Bytes => write!(f, "Bytes"),
             Ty::DateTime => write!(f, "DateTime"),
             Ty::Void => write!(f, "Void"),
+            Ty::Listener => write!(f, "Listener"),
             Ty::Array(e) if e.is_unknown() => write!(f, "Array"),
             Ty::Array(e) => write!(f, "Array<{e}>"),
             Ty::Map(k, v) if k.is_unknown() && v.is_unknown() => write!(f, "Map"),

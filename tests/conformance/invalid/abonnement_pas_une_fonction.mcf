@@ -1,0 +1,7 @@
+// attendu: MCF0231
+event Scored(_points: Int);
+total: Int = 0;
+
+func f(): Void {
+    _l: Listener = on Scored => total;
+}

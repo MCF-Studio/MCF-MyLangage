@@ -309,6 +309,11 @@ pub enum ExprKind {
     Start {
         call: Box<Expr>,
     },
+    /// `on Evenement => fonction` : abonne la fonction, vaut un `Listener` (DECISIONS D45).
+    Listen {
+        event: Path,
+        handler: Path,
+    },
     /// `await t` : attend la fin de la tâche `t` et vaut son résultat.
     Await {
         expr: Box<Expr>,

@@ -639,6 +639,26 @@ impl Parser<'_> {
         })
     }
 
+    /// Expression vide après une erreur déjà signalée.
+    fn error_expr(&self, start: Span) -> Expr {
+        Expr {
+            span: start.to(self.prev_span()),
+            kind: ExprKind::Error,
+        }
+    }
+
+    /// `on A.B =>` : abonnement (expression), et non gestionnaire `on A.B(...) { }`.
+    fn listener_ahead(&self) -> bool {
+        let mut i = 1;
+        if self.peek_at(i) != &K::Ident {
+            return false;
+        }
+        while self.peek_at(i + 1) == &K::Dot && self.peek_at(i + 2) == &K::Ident {
+            i += 2;
+        }
+        self.peek_at(i + 1) == &K::FatArrow
+    }
+
     fn starts_statement(&self) -> bool {
         matches!(
             self.peek(),
@@ -659,6 +679,7 @@ impl Parser<'_> {
                 | K::SelfKw
                 | K::Start
                 | K::Await
+                | K::On
                 | K::False
                 | K::LParen
                 | K::LBracket
@@ -722,6 +743,11 @@ impl Parser<'_> {
             K::Semi => {
                 self.stray_semicolon();
                 None
+            }
+            K::On if self.listener_ahead() => {
+                let stmt = self.simple_stmt()?;
+                self.expect_semi();
+                Some(stmt)
             }
             K::Func | K::Scope | K::Import | K::Event | K::On | K::Struct | K::Enum => {
                 let span = self.span();
@@ -1092,6 +1118,22 @@ impl Parser<'_> {
                 kind: ExprKind::Start {
                     call: Box::new(call),
                 },
+            };
+        }
+        if self.at(&K::On) {
+            let start = self.bump().span;
+            let Some(event) = self.path() else {
+                return self.error_expr(start);
+            };
+            if !self.expect(K::FatArrow) {
+                return self.error_expr(start);
+            }
+            let Some(handler) = self.path() else {
+                return self.error_expr(start);
+            };
+            return Expr {
+                span: start.to(handler.span),
+                kind: ExprKind::Listen { event, handler },
             };
         }
         if self.at(&K::Await) {

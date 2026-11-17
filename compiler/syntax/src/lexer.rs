@@ -51,6 +51,8 @@ pub enum TokenKind {
     Comma,
     Dot,
     Assign,
+    /// `=>` : `on Evenement => fonction`.
+    FatArrow,
     EqEq,
     NotEq,
     Lt,
@@ -125,6 +127,7 @@ impl TokenKind {
             Comma => ",",
             Dot => ".",
             Assign => "=",
+            FatArrow => "=>",
             EqEq => "==",
             NotEq => "!=",
             Lt => "<",
@@ -297,6 +300,8 @@ impl Lexer<'_> {
                 '=' => {
                     if self.eat('=') {
                         EqEq
+                    } else if self.eat('>') {
+                        FatArrow
                     } else {
                         Assign
                     }
@@ -611,6 +616,10 @@ mod tests {
         assert_eq!(
             kinds("await start f()"),
             vec![Await, Start, Ident, LParen, RParen, Eof]
+        );
+        assert_eq!(
+            kinds("on A.B => f"),
+            vec![On, Ident, Dot, Ident, FatArrow, Ident, Eof]
         );
     }
 

@@ -1,0 +1,8 @@
+// attendu: MCF0116
+event Scored(_points: Int);
+
+func f(): Void {
+    on Scored(_p) {
+        print(_p);
+    }
+}

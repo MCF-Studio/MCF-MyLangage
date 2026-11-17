@@ -1,0 +1,10 @@
+// attendu: MCF0213
+event Scored(_points: Int);
+
+func show(_name: String): Void {
+    print(_name);
+}
+
+func f(): Void {
+    _l: Listener = on Scored => show;
+}
