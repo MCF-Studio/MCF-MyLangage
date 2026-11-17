@@ -101,6 +101,33 @@ impl Ty {
     }
 }
 
+/// Méthodes natives d'une valeur : (types des paramètres, type de retour).
+/// Liste documentée dans `docs/grammaire/types.md` (DECISIONS D38).
+pub fn native_method(recv: &Ty, name: &str) -> Option<(Vec<Ty>, Ty)> {
+    Some(match (recv, name) {
+        (Ty::Array(_) | Ty::Map(..) | Ty::String, "length") => (vec![], Ty::Int),
+        (Ty::Array(e), "push") => (vec![(**e).clone()], Ty::Void),
+        (Ty::Array(e), "pop") => (vec![], (**e).clone()),
+        (Ty::Array(e), "removeAt") => (vec![Ty::Int], (**e).clone()),
+        (Ty::Array(e), "contains") => (vec![(**e).clone()], Ty::Bool),
+        (Ty::Map(k, _), "has") => (vec![(**k).clone()], Ty::Bool),
+        (Ty::Map(k, _), "remove") => (vec![(**k).clone()], Ty::Bool),
+        (Ty::Map(k, _), "keys") => (vec![], Ty::Array(k.clone())),
+        (Ty::Map(_, v), "values") => (vec![], Ty::Array(v.clone())),
+        _ => return None,
+    })
+}
+
+/// Noms des méthodes natives d'un type (pour les messages d'erreur).
+pub fn native_method_names(recv: &Ty) -> &'static [&'static str] {
+    match recv {
+        Ty::Array(_) => &["length", "push", "pop", "removeAt", "contains"],
+        Ty::Map(..) => &["length", "has", "remove", "keys", "values"],
+        Ty::String => &["length"],
+        _ => &[],
+    }
+}
+
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

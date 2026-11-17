@@ -1,0 +1,6 @@
+// attendu: MCF0220, MCF0210
+func run(): Void {
+    _xs: Array<Int> = [1];
+    _s: String = duplicate(_xs);
+    _t: Array<Int> = duplicate();
+}

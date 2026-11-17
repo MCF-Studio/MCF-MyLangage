@@ -109,5 +109,6 @@ codes! {
     STACK_OVERFLOW = "MCF0406", Runtime, Error, "Récursion trop profonde.";
     INVALID_ARGUMENT = "MCF0407", Runtime, Error, "Argument refusé par une fonction native.";
     OUTPUT_ERROR = "MCF0408", Runtime, Error, "Écriture impossible sur la sortie.";
+    EMPTY_COLLECTION = "MCF0409", Runtime, Error, "Retrait dans un tableau vide.";
     INTERNAL_RUNTIME_ERROR = "MCF0499", Runtime, Error, "Erreur interne de l'interpréteur (à signaler).";
 }

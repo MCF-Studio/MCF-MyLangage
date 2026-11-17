@@ -8,7 +8,7 @@
 
 mod value;
 
-pub use value::{equal, StructValue, Value};
+pub use value::{deep_copy, equal, StructValue, Value};
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -84,6 +84,7 @@ fn run_here<W: Write>(modules: &[&Module], out: &mut W) -> Res<()> {
 enum Builtin {
     Print,
     Sleep,
+    Duplicate,
 }
 
 /// Ce que désigne un nom déclaré (miroir des symboles de `mcf_semantic`).
@@ -427,6 +428,7 @@ impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
         match name {
             "print" => Some(Entity::Builtin(Builtin::Print)),
             "sleep" => Some(Entity::Builtin(Builtin::Sleep)),
+            "duplicate" => Some(Entity::Builtin(Builtin::Duplicate)),
             _ => None,
         }
     }
@@ -555,6 +557,7 @@ impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
             ));
         };
         match b {
+            Builtin::Duplicate => return Ok(deep_copy(arg)),
             Builtin::Print => {
                 let text = display(arg, &self.p.types);
                 if writeln!(self.out, "{text}").is_err() {
@@ -584,6 +587,65 @@ impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
             }
         }
         Ok(Value::Void)
+    }
+
+    /// Méthodes natives (DECISIONS D38). Les signatures ont été vérifiées par `mcf_semantic`.
+    fn call_method(
+        &mut self,
+        recv: Value,
+        method: &Ident,
+        mut args: Vec<Value>,
+        arg_spans: &[Span],
+    ) -> Res<Value> {
+        let arg = args.pop();
+        let length = |n: usize| Value::Int(i64::try_from(n).unwrap_or(i64::MAX));
+        match (&recv, method.name.as_str(), arg) {
+            (Value::Str(s), "length", None) => Ok(length(s.chars().count())),
+            (Value::Array(a), "length", None) => Ok(length(a.borrow().len())),
+            (Value::Map(m), "length", None) => Ok(length(m.borrow().len())),
+            (Value::Array(a), "push", Some(v)) => {
+                a.borrow_mut().push(v);
+                Ok(Value::Void)
+            }
+            (Value::Array(a), "pop", None) => {
+                let last = a.borrow_mut().pop();
+                last.ok_or_else(|| {
+                    self.error_with(
+                        Diagnostic::new(
+                            &codes::EMPTY_COLLECTION,
+                            method.span,
+                            "`pop` sur un tableau vide",
+                        )
+                        .suggestion("vérifier d'abord `tableau.length() > 0`"),
+                    )
+                })
+            }
+            (Value::Array(a), "removeAt", Some(i)) => {
+                let index = self.array_index(&a.borrow(), &i, arg_spans[0])?;
+                let removed = a.borrow_mut().remove(index);
+                Ok(removed)
+            }
+            (Value::Array(a), "contains", Some(v)) => {
+                Ok(Value::Bool(a.borrow().iter().any(|item| equal(item, &v))))
+            }
+            (Value::Map(m), "has", Some(k)) => {
+                Ok(Value::Bool(map_position(&m.borrow(), &k).is_some()))
+            }
+            (Value::Map(m), "remove", Some(k)) => {
+                let found = map_position(&m.borrow(), &k);
+                if let Some(i) = found {
+                    m.borrow_mut().remove(i);
+                }
+                Ok(Value::Bool(found.is_some()))
+            }
+            (Value::Map(m), "keys", None) => Ok(Value::new_array(
+                m.borrow().iter().map(|(k, _)| k.clone()).collect(),
+            )),
+            (Value::Map(m), "values", None) => Ok(Value::new_array(
+                m.borrow().iter().map(|(_, v)| v.clone()).collect(),
+            )),
+            _ => Err(self.internal(method.span, "méthode native inconnue")),
+        }
     }
 
     // ---------------------------------------------------------------- instructions
@@ -780,9 +842,12 @@ impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
                         Ok(())
                     }
                     Value::Map(m) => {
+                        // Position cherchée avant d'emprunter en écriture : la clé peut
+                        // contenir la map elle-même.
+                        let found = map_position(&m.borrow(), &key);
                         let mut m = m.borrow_mut();
-                        match m.iter_mut().find(|(k, _)| equal(k, &key)) {
-                            Some((_, slot)) => *slot = v,
+                        match found {
+                            Some(i) => m[i].1 = v,
                             None => m.push((key, v)),
                         }
                         Ok(())
@@ -951,6 +1016,13 @@ impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
             }
             ExprKind::Call { callee, args } => {
                 let target = self.entity_of(callee);
+                if let (None, ExprKind::Member { object, field }) = (target, &callee.kind) {
+                    // Méthode native : le receveur est évalué avant les arguments.
+                    let recv = self.eval(object)?;
+                    let values = args.iter().map(|a| self.eval(a)).collect::<Res<Vec<_>>>()?;
+                    let spans: Vec<Span> = args.iter().map(|a| a.span).collect();
+                    return self.call_method(recv, field, values, &spans);
+                }
                 let values = args.iter().map(|a| self.eval(a)).collect::<Res<Vec<_>>>()?;
                 let called_at = Some((self.frame().file, expr.span));
                 match target {
@@ -1099,6 +1171,10 @@ impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
             _ => Err(self.internal(span, "opérandes incompatibles")),
         }
     }
+}
+
+fn map_position(entries: &[(Value, Value)], key: &Value) -> Option<usize> {
+    entries.iter().position(|(k, _)| equal(k, key))
 }
 
 fn as_f64(v: &Value) -> f64 {

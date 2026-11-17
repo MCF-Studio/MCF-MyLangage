@@ -1,0 +1,7 @@
+Team { name: "Rouge", members: ["Alex"] }
+Team { name: "Bleu", members: ["Alex", "Max"] }
+["Alex", "Tom"]
+["Alex", "Max"]
+3
+5
+true

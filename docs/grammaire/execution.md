@@ -22,6 +22,16 @@ mcf run mon_projet/ --strict    # les avertissements bloquent aussi l'exécution
 | `Int`, `Float`, `Bool`, `String`, énumération | copiés |
 | structure, `Array`, `Map` | **partagés** : `_b = _a;` désigne la même valeur ; une fonction qui modifie un champ de son paramètre modifie l'original (D30) |
 
+Pour travailler sur une copie sans toucher à l'original, `duplicate` (D37) :
+
+```mcf
+_shared: Team = _a;            // même équipe : modifier _shared modifie _a
+_copy: Team = duplicate(_a);   // copie complète : _a ne bouge plus
+_copy.members.push("Max");     // _a.members est inchangé
+```
+
+`duplicate` recopie tout, à tous les niveaux (les structures, tableaux et maps contenus aussi). Sur un nombre, une chaîne ou une énumération, il rend simplement la même valeur.
+
 - Une variable déclarée sans valeur : un `Array` ou une `Map` démarrent vides ; toute autre variable reste **sans valeur** jusqu'à sa première affectation, et la lire avant → MCF0405 (D31).
 - `==` compare le contenu (deux structures aux mêmes champs sont égales) ; `Int` et `Float` se comparent avec promotion.
 
@@ -35,6 +45,7 @@ mcf run mon_projet/ --strict    # les avertissements bloquent aussi l'exécution
 
 - `tableau[i]` hors des limites → MCF0403 (lecture comme écriture : un tableau ne grandit pas par index).
 - `map[clé]` : la lecture d'une clé absente → MCF0404 ; l'écriture ajoute ou remplace.
+- Méthodes natives (`push`, `pop`, `length`…) : voir [types](types.md#méthodes-natives). `pop` sur un tableau vide → MCF0409.
 - `foreach` sur un tableau parcourt ses éléments, sur une `Map` ses clés dans l'ordre d'insertion. Le contenu parcouru est celui du **début** de la boucle.
 
 ## Événements

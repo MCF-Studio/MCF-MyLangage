@@ -1,0 +1,31 @@
+// duplicate : copie complète, l'original ne bouge pas
+struct Team {
+    name: String;
+    members: Array<String>;
+}
+
+func main(): Void {
+    _a: Team = Team { name: "Rouge", members: ["Alex"] };
+
+    _shared: Team = _a;
+    _copy: Team = duplicate(_a);
+
+    _copy.name = "Bleu";
+    _copy.members.push("Max");
+    print(_a);
+    print(_copy);
+
+    _shared.members.push("Tom");
+    print(_a.members);
+    print(_copy.members);
+
+    _scores: Map<String, Int>;
+    _scores["Alex"] = 3;
+    _backup: Map<String, Int> = duplicate(_scores);
+    _scores["Alex"] = 10;
+    print(_backup["Alex"]);
+
+    _n: Int = duplicate(5);
+    print(_n);
+    print(duplicate(_a) == _a);
+}

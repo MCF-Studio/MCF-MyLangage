@@ -1,0 +1,17 @@
+// Méthodes natives et duplicate (D37, D38)
+names: Array<String> = ["Alex"];
+ages: Map<String, Int>;
+
+func run(): Void {
+    names.push("Max");
+    _count: Int = names.length() + ages.length() + "abc".length();
+    _last: String = names.pop();
+    _found: Bool = names.contains("Alex") && ages.has("Alex");
+    _keys: Array<String> = ages.keys();
+    _values: Array<Int> = ages.values();
+    _removed: Bool = ages.remove("Alex");
+    _first: String = names.removeAt(0);
+    _copy: Array<String> = duplicate(names);
+    _state: Bool, Int = true;
+    _other: Bool, Int = duplicate(_state);
+}

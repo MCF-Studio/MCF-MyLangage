@@ -1,0 +1,7 @@
+// attendu: MCF0241, MCF0241
+func run(): Void {
+    _xs: Array<Int> = [1];
+    _xs.add(2);
+    _n: Int = 3;
+    print(_n.length());
+}

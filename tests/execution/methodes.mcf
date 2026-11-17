@@ -1,0 +1,29 @@
+// Méthodes natives des tableaux, maps et chaînes
+func main(): Void {
+    _xs: Array<Int>;
+    _xs.push(3);
+    _xs.push(1);
+    _xs.push(4);
+    print(_xs.length());
+    print(_xs.contains(1));
+    print(_xs.pop());
+    print(_xs.removeAt(0));
+    print(_xs);
+
+    _ages: Map<String, Int>;
+    _ages["Alex"] = 30;
+    _ages["Max"] = 25;
+    print(_ages.has("Max"));
+    print(_ages.remove("Max"));
+    print(_ages.remove("Max"));
+    print(_ages.keys());
+    print(_ages.values());
+    print(_ages.length());
+
+    print("été".length());
+
+    _grid: Array<Array<Int>>;
+    _grid.push([1, 2]);
+    _grid[0].push(3);
+    print(_grid);
+}

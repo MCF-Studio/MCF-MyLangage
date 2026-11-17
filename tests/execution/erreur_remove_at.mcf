@@ -1,0 +1,5 @@
+// erreur: MCF0403
+func main(): Void {
+    _xs: Array<Int> = [1];
+    _xs.removeAt(1);
+}

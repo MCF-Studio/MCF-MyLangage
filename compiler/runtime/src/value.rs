@@ -4,6 +4,7 @@
 //! et structures sont **partagés** (DECISIONS D30) : `_b = _a;` désigne la même structure.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::rc::Rc;
 
@@ -65,6 +66,60 @@ impl Value {
             Value::Struct(s) => Some(Rc::as_ptr(s) as *const u8 as usize),
             _ => None,
         }
+    }
+}
+
+/// `duplicate(v)` : copie profonde. Les structures, tableaux et maps sont recopiés à tous les
+/// niveaux, la copie ne partage rien avec l'original. Les partages internes et les cycles
+/// sont reproduits à l'identique dans la copie (DECISIONS D37).
+pub fn deep_copy(v: &Value) -> Value {
+    copy_in(v, &mut HashMap::new())
+}
+
+fn copy_in(v: &Value, done: &mut HashMap<usize, Value>) -> Value {
+    let Some(ptr) = v.shared_ptr() else {
+        return v.clone();
+    };
+    if let Some(copy) = done.get(&ptr) {
+        return copy.clone();
+    }
+    match v {
+        Value::Array(items) => {
+            let copy = Value::new_array(Vec::new());
+            done.insert(ptr, copy.clone());
+            let values: Vec<Value> = items.borrow().iter().map(|i| copy_in(i, done)).collect();
+            if let Value::Array(c) = &copy {
+                *c.borrow_mut() = values;
+            }
+            copy
+        }
+        Value::Map(entries) => {
+            let copy = Value::new_map();
+            done.insert(ptr, copy.clone());
+            let values: Vec<(Value, Value)> = entries
+                .borrow()
+                .iter()
+                .map(|(k, val)| (copy_in(k, done), copy_in(val, done)))
+                .collect();
+            if let Value::Map(c) = &copy {
+                *c.borrow_mut() = values;
+            }
+            copy
+        }
+        Value::Struct(s) => {
+            let id = s.borrow().id;
+            let copy = Value::Struct(Rc::new(RefCell::new(StructValue {
+                id,
+                fields: Vec::new(),
+            })));
+            done.insert(ptr, copy.clone());
+            let fields: Vec<Value> = s.borrow().fields.iter().map(|f| copy_in(f, done)).collect();
+            if let Value::Struct(c) = &copy {
+                c.borrow_mut().fields = fields;
+            }
+            copy
+        }
+        other => other.clone(),
     }
 }
 
@@ -241,6 +296,37 @@ mod tests {
         let s = Value::Str("Alex".into());
         assert_eq!(display(&s, &names()), "Alex");
         assert_eq!(display(&Value::new_array(vec![s]), &names()), "[\"Alex\"]");
+    }
+
+    #[test]
+    fn deep_copy_shares_nothing_with_the_original() {
+        let inner = Value::new_array(vec![Value::Int(1)]);
+        let outer = Value::new_array(vec![inner.clone(), inner]);
+        let copy = deep_copy(&outer);
+        let (Value::Array(o), Value::Array(c)) = (&outer, &copy) else {
+            unreachable!()
+        };
+        assert!(!Rc::ptr_eq(o, c));
+        let (Value::Array(c0), Value::Array(c1)) = (&c.borrow()[0], &c.borrow()[1]) else {
+            unreachable!()
+        };
+        // Le partage interne est reproduit, mais pas avec l'original.
+        assert!(Rc::ptr_eq(c0, c1));
+        let Value::Array(o0) = &o.borrow()[0] else {
+            unreachable!()
+        };
+        assert!(!Rc::ptr_eq(o0, c0));
+        assert!(equal(&outer, &copy));
+    }
+
+    #[test]
+    fn deep_copy_of_a_cycle_terminates() {
+        let a = Value::new_array(vec![]);
+        if let Value::Array(inner) = &a {
+            inner.borrow_mut().push(a.clone());
+        }
+        let copy = deep_copy(&a);
+        assert_eq!(display(&copy, &names()), "[…]");
     }
 
     #[test]

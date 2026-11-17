@@ -1,0 +1,7 @@
+// attendu: MCF0220, MCF0210, MCF0220
+func run(): Void {
+    _xs: Array<Int> = [1];
+    _xs.push("deux");
+    _xs.pop(1);
+    _s: String = _xs.pop();
+}

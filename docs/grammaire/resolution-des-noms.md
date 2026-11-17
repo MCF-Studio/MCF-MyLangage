@@ -28,7 +28,7 @@ func main(): Void {
 1. Blocs locaux, du plus proche au plus lointain (paramètres compris).
 2. Scopes englobants, du plus proche jusqu'à la racine du fichier.
 3. Éléments importés dans le fichier.
-4. Fonctions natives : `print(x)`, `sleep(ms)`.
+4. Fonctions natives : `print(x)`, `sleep(ms)`, `duplicate(x)`.
 
 ## Règles
 

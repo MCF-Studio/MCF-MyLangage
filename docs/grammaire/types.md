@@ -70,10 +70,29 @@ Autre combinaison → MCF0230.
 - `[a, b, c]` : tous les éléments du même type.
 - `foreach (_x in tableau)` : `_x` prend le type des éléments.
 
+## Méthodes natives
+
+Elles s'appellent avec `.` sur une valeur (D38) ; un nom inconnu → MCF0241 avec la liste des méthodes possibles, mauvais arguments → MCF0210 / MCF0220. Une méthode s'appelle toujours : `_xs.length` sans parenthèses → MCF0232.
+
+| Receveur | Méthode | Retour |
+|---|---|---|
+| `Array<T>`, `Map<K, V>`, `String` | `length()` | `Int` (nombre de caractères pour une chaîne) |
+| `Array<T>` | `push(_v: T)` | `Void` (ajoute à la fin) |
+| `Array<T>` | `pop()` | `T` (retire le dernier ; tableau vide → MCF0409) |
+| `Array<T>` | `removeAt(_i: Int)` | `T` (retire l'élément ; hors limites → MCF0403) |
+| `Array<T>` | `contains(_v: T)` | `Bool` (comparaison `==`) |
+| `Map<K, V>` | `has(_k: K)` | `Bool` |
+| `Map<K, V>` | `remove(_k: K)` | `Bool` (`false` si la clé n'existait pas) |
+| `Map<K, V>` | `keys()` / `values()` | `Array<K>` / `Array<V>`, ordre d'insertion |
+
+## `duplicate(valeur)`
+
+Copie complète d'une valeur, du **même type** que l'original (D37) : `_copy: Team = duplicate(_team);`. Voir [exécution](execution.md#valeurs).
+
 ## Littéraux
 
 `Int` = entier signé 64 bits (D15) : au-delà → MCF0229.
 
 ## Pas encore vérifié
 
-Membres d'une valeur (`x.length`), initialisation avant usage d'une variable déclarée sans valeur, structures et énumérations : phases suivantes.
+Initialisation avant usage d'une variable déclarée sans valeur (détectée à l'exécution, MCF0405).

@@ -54,6 +54,7 @@ pub fn check_project(sources: &[Source]) -> Vec<Vec<Diagnostic>> {
 enum Builtin {
     Print,
     Sleep,
+    Duplicate,
 }
 
 #[derive(Clone, Debug)]
@@ -112,6 +113,11 @@ struct Frame {
 enum Resolved {
     Local,
     Sym(Sym),
+    /// Méthode native d'une valeur (`_xs.push`) : signature déjà adaptée au type du receveur.
+    Method {
+        params: Vec<Ty>,
+        ret: Ty,
+    },
     Opaque,
 }
 
@@ -1071,6 +1077,7 @@ impl Analyzer {
         match name {
             "print" => Some(Resolved::Sym(Sym::Builtin(Builtin::Print))),
             "sleep" => Some(Resolved::Sym(Sym::Builtin(Builtin::Sleep))),
+            "duplicate" => Some(Resolved::Sym(Sym::Builtin(Builtin::Duplicate))),
             _ => None,
         }
     }
@@ -1312,6 +1319,15 @@ impl Analyzer {
                     self.check_expr(value, table);
                     return;
                 }
+                if let Resolved::Method { .. } = t.res {
+                    self.report(Diagnostic::new(
+                        &codes::NOT_ASSIGNABLE,
+                        target.span,
+                        "impossible d'affecter une valeur à une méthode",
+                    ));
+                    self.check_expr(value, table);
+                    return;
+                }
                 let v = self.check_expr(value, table);
                 self.expect_assignable(&v.ty, &t.declared, value.span);
                 // Après `x = valeur`, le type actif de x est celui de la valeur.
@@ -1457,6 +1473,17 @@ impl Analyzer {
         let t = self.check_any(expr, table);
         match &t.res {
             Resolved::Sym(Sym::Global { .. }) | Resolved::Local | Resolved::Opaque => t,
+            Resolved::Method { .. } => {
+                self.report(
+                    Diagnostic::new(
+                        &codes::NOT_A_VALUE,
+                        expr.span,
+                        "une méthode n'est pas une valeur",
+                    )
+                    .suggestion("l'appeler : `valeur.methode(...)`"),
+                );
+                Typed::value(Ty::Unknown)
+            }
             Resolved::Sym(sym) => {
                 let suggestion = match sym {
                     Sym::Func { .. } | Sym::Builtin(_) => "l'appeler : `nom(...)`",
@@ -1709,14 +1736,26 @@ impl Analyzer {
             (_, Ty::Unknown) => Typed::value(Ty::Unknown),
             (_, other) => {
                 let other = other.clone();
+                if let Some((params, ret)) = types::native_method(&other, &field.name) {
+                    return Typed {
+                        res: Resolved::Method { params, ret },
+                        ty: Ty::Unknown,
+                        declared: Ty::Unknown,
+                    };
+                }
                 if other.is_dual() {
                     self.not_narrowed_or_invalid(&other, object.span, ".");
                 } else {
-                    self.report(Diagnostic::new(
+                    let methods = types::native_method_names(&other);
+                    let mut d = Diagnostic::new(
                         &codes::UNKNOWN_FIELD,
                         field.span,
                         format!("une valeur `{other}` n'a pas de membre `{}`", field.name),
-                    ));
+                    );
+                    if !methods.is_empty() {
+                        d = d.expected(methods.join(", "));
+                    }
+                    self.report(d);
                 }
                 Typed::value(Ty::Unknown)
             }
@@ -1840,6 +1879,32 @@ impl Analyzer {
                 // La fonction appelée peut modifier des globales.
                 self.forget_global_narrowings();
                 ret
+            }
+            Resolved::Method { params, ret } => {
+                count_error(self, params.len());
+                for ((t, span), p) in arg_tys.iter().zip(&params) {
+                    self.expect_assignable(t, p, *span);
+                }
+                ret
+            }
+            Resolved::Sym(Sym::Builtin(Builtin::Duplicate)) => {
+                count_error(self, 1);
+                match arg_tys.first() {
+                    Some((Ty::Void, span)) => {
+                        self.report(
+                            Diagnostic::new(
+                                &codes::TYPE_MISMATCH,
+                                *span,
+                                "`duplicate` attend une valeur, pas `Void`",
+                            )
+                            .received("Void"),
+                        );
+                        Ty::Unknown
+                    }
+                    // La copie a le type (actif) de l'original.
+                    Some((t, _)) if args.len() == 1 => t.clone(),
+                    _ => Ty::Unknown,
+                }
             }
             Resolved::Sym(Sym::Builtin(b)) => {
                 count_error(self, 1);

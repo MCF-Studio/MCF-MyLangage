@@ -1,0 +1,5 @@
+// erreur: MCF0409
+func main(): Void {
+    _xs: Array<String>;
+    print(_xs.pop());
+}

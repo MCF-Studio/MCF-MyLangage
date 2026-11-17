@@ -1,0 +1,6 @@
+// attendu: MCF0232, MCF0212
+func run(): Void {
+    _xs: Array<Int> = [1];
+    print(_xs.length);
+    _xs.length = 2;
+}
