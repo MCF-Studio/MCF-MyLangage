@@ -1,0 +1,49 @@
+// Récursion, scopes, globales, ordre d'initialisation
+base: Int = 10;
+double: Int = twice(base);
+
+func twice(_x: Int): Int {
+    return _x * 2;
+}
+
+func factorial(_n: Int): Int {
+    if (_n <= 1) then {
+        return 1;
+    }
+    return _n * factorial(_n - 1);
+}
+
+func fib(_n: Int): Int {
+    if (_n < 2) then {
+        return _n;
+    }
+    return fib(_n - 1) + fib(_n - 2);
+}
+
+func depth(_n: Int): Int {
+    if (_n == 0) then {
+        return 0;
+    }
+    return 1 + depth(_n - 1);
+}
+
+scope Counter {
+    value: Int = 0;
+
+    func increment(): Void {
+        value = value + 1;
+    }
+}
+
+func main(): Void {
+    print(double);
+    print(factorial(20));
+    print(fib(20));
+    print(depth(9000));
+    Counter.increment();
+    Counter.increment();
+    print(Counter.value);
+    Counter.value = 40;
+    Counter.increment();
+    print(Counter.value);
+}

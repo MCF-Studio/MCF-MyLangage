@@ -24,6 +24,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo run -q -p mcf-cli -- check examples --strict
+      - run: cargo run -q -p mcf-cli -- run examples/hello --strict
 
   audit:
     name: audit des dépendances

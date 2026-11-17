@@ -1,0 +1,5 @@
+// erreur: MCF0404
+func main(): Void {
+    _ages: Map<String, Int>;
+    print(_ages["Alex"]);
+}

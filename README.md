@@ -5,7 +5,7 @@
 **Un langage strict, lisible d'un coup d'œil, pensé pour les humains *et* les IA — et incapable de vous espionner.**
 
 [![CI](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml/badge.svg)](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml)
-![Statut](https://img.shields.io/badge/statut-phase%205%20%C2%B7%20structures-orange)
+![Statut](https://img.shields.io/badge/statut-phase%206%20%C2%B7%20ex%C3%A9cution-orange)
 [![Licence](https://img.shields.io/badge/licence-GPL--3.0-blue)](LICENSE)
 ![Rust](https://img.shields.io/badge/compilateur-Rust-b7410e)
 ![Contributions](https://img.shields.io/badge/contributions-bienvenues-brightgreen)
@@ -90,12 +90,13 @@ cd MCF-MyLangage
 cargo build --release
 
 ./target/release/mcf check examples/                    # vérifier un projet
+./target/release/mcf run examples/hello                 # l'exécuter (à partir de func main(): Void)
 ./target/release/mcf check examples/ --format json --strict
 ./target/release/mcf describe errors                    # toutes les erreurs possibles
 ./target/release/mcf describe keywords
 ```
 
-> Aujourd'hui MCF **analyse** le code (syntaxe, noms, scopes, imports entre fichiers, types, DualType, structures et énumérations) mais ne l'**exécute** pas encore. Voir la [feuille de route](ROADMAP.md).
+> Aujourd'hui MCF **analyse** le code (syntaxe, noms, scopes, imports entre fichiers, types, DualType, structures et énumérations) et l'**exécute** avec un interpréteur (`mcf run`). Le backend natif, l'asynchrone et les interfaces viendront ensuite : voir la [feuille de route](ROADMAP.md).
 
 ## 🤝 Participer
 
@@ -115,7 +116,7 @@ Tout est expliqué dans [CONTRIBUTING.md](CONTRIBUTING.md). Les ⭐ font aussi p
 |---|---|
 | [Cahier des charges 1.2](docs/cahier-des-charges/edition-1.2.md) | Référence du langage, de l'IDE et de la sécurité |
 | [Chiffrement et clés](docs/securite/chiffrement-et-cles.md) | Engagement « aucun accès éditeur », menaces, limites |
-| [Lexique](docs/grammaire/lexique.md) · [Grammaire](docs/grammaire/grammaire.md) · [Résolution des noms](docs/grammaire/resolution-des-noms.md) · [Types](docs/grammaire/types.md) · [Structures](docs/grammaire/structures.md) | Ce que le compilateur vérifie aujourd'hui |
+| [Lexique](docs/grammaire/lexique.md) · [Grammaire](docs/grammaire/grammaire.md) · [Résolution des noms](docs/grammaire/resolution-des-noms.md) · [Types](docs/grammaire/types.md) · [Structures](docs/grammaire/structures.md) · [Exécution](docs/grammaire/execution.md) | Ce que le compilateur vérifie et exécute aujourd'hui |
 | [Décisions](docs/DECISIONS.md) | Arbitrages en attente de validation |
 | [Cahier des charges 1.0](docs/cahier-des-charges/edition-1.0.md) | Historique |
 
@@ -125,8 +126,10 @@ Tout est expliqué dans [CONTRIBUTING.md](CONTRIBUTING.md). Les ⭐ font aussi p
 compiler/diagnostics   identifiants d'erreurs stables, rendu texte et JSON
 compiler/syntax        lexer, AST, parser
 compiler/semantic      résolution des noms, scopes, imports, types, structures
+compiler/runtime       interpréteur (`mcf run`)
 cli                    l'exécutable `mcf`
 tests/conformance      programmes valides / invalides avec l'erreur attendue
+tests/execution        programmes exécutés et leur sortie attendue
 examples               exemples MCF
 docs                   spécifications
 ```

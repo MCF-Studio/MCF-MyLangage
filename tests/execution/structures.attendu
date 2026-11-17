@@ -1,0 +1,6 @@
+Max
+Status.Offline
+true
+true
+false
+User { name: "Max", status: Status.Offline, tags: ["invité"] }

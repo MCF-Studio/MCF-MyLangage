@@ -20,6 +20,7 @@ print(playerState + 10);   // MCF0221 : type actif inconnu
 ```
 
 - Deux types **distincts** maximum (MCF0106, MCF0203). `Void` interdit (MCF0227).
+- Pas deux collections de même sorte (`Array<Int>, Array<String>`) : `is` ne pourrait pas les distinguer à l'exécution (MCF0203).
 - Une valeur DualType ne peut ni entrer dans un type simple, ni servir d'opérande, sans *narrowing* (MCF0221).
 - `print` accepte une valeur DualType telle quelle.
 
@@ -59,6 +60,7 @@ Autre combinaison → MCF0230.
 ## Fonctions et retours
 
 - Arguments : nombre (MCF0210) et types (MCF0220) vérifiés ; appeler une non-fonction → MCF0231.
+- Une fonction, un scope ou un type n'est pas une valeur : `print(Player.hi)` → MCF0232 (l'appeler : `Player.hi()`).
 - `return valeur;` dans une fonction `Void` → MCF0225 ; `return;` ailleurs → MCF0224.
 - Une fonction non `Void` doit retourner sur **tous** les chemins (MCF0226) : un `if` sans `else` ne suffit pas.
 

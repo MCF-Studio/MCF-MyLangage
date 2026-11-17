@@ -1,0 +1,6 @@
+// erreur: MCF0401
+func main(): Void {
+    _zero: Int = 0;
+    print("avant");
+    print(1 / _zero);
+}

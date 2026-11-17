@@ -1,0 +1,1147 @@
+//! Exécution des programmes MCF (phase 6) : interpréteur qui parcourt l'AST.
+//!
+//! Le projet doit avoir été accepté par `mcf_semantic` (aucune erreur) : l'interpréteur ne
+//! refait pas la vérification des types. Une incohérence qu'il rencontre malgré tout est un
+//! bug du compilateur, signalée par MCF0499 plutôt que par un plantage.
+//!
+//! Règles d'exécution : `docs/grammaire/execution.md`.
+
+mod value;
+
+pub use value::{equal, StructValue, Value};
+
+use std::collections::HashMap;
+use std::io::Write;
+use std::time::Duration;
+
+use mcf_diagnostics::{codes, Code, Diagnostic, Span};
+use mcf_syntax::ast::*;
+use value::{display, EnumInfo, StructInfo, TypeNames};
+
+/// Profondeur d'appels maximale avant MCF0406 (récursion trop profonde).
+pub const MAX_CALL_DEPTH: usize = 10_000;
+
+/// Pile du fil d'exécution : assez grande pour `MAX_CALL_DEPTH` appels imbriqués.
+const STACK_SIZE: usize = 512 * 1024 * 1024;
+
+/// Un appel en cours au moment d'une erreur.
+#[derive(Clone, Debug)]
+pub struct TraceFrame {
+    /// Nom qualifié : `Player.showState`, `main`, `on PlayerConnected`…
+    pub function: String,
+    /// Endroit de l'appel (fichier, position) ; `None` pour le point de départ.
+    pub called_at: Option<(usize, Span)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RuntimeError {
+    /// Fichier où l'erreur se produit ; `None` pour une erreur de projet (pas de `main`).
+    pub file: Option<usize>,
+    pub diagnostic: Diagnostic,
+    /// Appels en cours, du plus récent au plus ancien.
+    pub trace: Vec<TraceFrame>,
+}
+
+type Res<T> = Result<T, Box<RuntimeError>>;
+
+/// Exécute un projet vérifié : initialise les globales (fichiers dans l'ordre donné, puis
+/// ordre de déclaration), puis appelle `func main(): Void`. Ce que `print` affiche va dans `out`.
+pub fn run<W: Write + Send>(modules: &[&Module], out: &mut W) -> Res<()> {
+    let failure = |message: &str| {
+        Box::new(RuntimeError {
+            file: None,
+            diagnostic: Diagnostic::new(&codes::INTERNAL_RUNTIME_ERROR, Span::new(0, 0), message),
+            trace: Vec::new(),
+        })
+    };
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .name("mcf-run".into())
+            .stack_size(STACK_SIZE)
+            .spawn_scoped(s, || run_here(modules, out))
+            .map_err(|e| failure(&format!("impossible de démarrer l'exécution : {e}")))?
+            .join()
+            .unwrap_or_else(|_| Err(failure("l'interpréteur s'est arrêté de façon inattendue")))
+    })
+}
+
+fn run_here<W: Write>(modules: &[&Module], out: &mut W) -> Res<()> {
+    let program = Program::build(modules);
+    let mut it = Interp {
+        p: &program,
+        globals: vec![None; program.globals.len()],
+        out,
+        calls: Vec::new(),
+    };
+    let result = it.start();
+    let _ = it.out.flush();
+    result
+}
+
+// ==================================================================== programme
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Builtin {
+    Print,
+    Sleep,
+}
+
+/// Ce que désigne un nom déclaré (miroir des symboles de `mcf_semantic`).
+#[derive(Clone, Copy, Debug)]
+enum Entity {
+    Global(usize),
+    Func(usize),
+    Scope(usize),
+    Struct(usize),
+    Enum(usize),
+    Builtin(Builtin),
+}
+
+struct Table {
+    parent: Option<usize>,
+    names: HashMap<String, Entity>,
+}
+
+struct FuncInfo<'a> {
+    name: String,
+    decl: &'a FuncDecl,
+    table: usize,
+    file: usize,
+}
+
+struct GlobalInfo<'a> {
+    name: String,
+    decl: &'a VarDecl,
+    table: usize,
+    file: usize,
+}
+
+struct Handler<'a> {
+    decl: &'a OnHandler,
+    table: usize,
+    file: usize,
+}
+
+struct Program<'a> {
+    tables: Vec<Table>,
+    roots: Vec<usize>,
+    /// Par fichier : nom importé → (table d'origine, nom).
+    imports: Vec<HashMap<String, (usize, String)>>,
+    funcs: Vec<FuncInfo<'a>>,
+    globals: Vec<GlobalInfo<'a>>,
+    /// Ordre d'initialisation : fichiers dans l'ordre, déclarations dans l'ordre.
+    types: TypeNames,
+    handlers: HashMap<String, Vec<Handler<'a>>>,
+}
+
+fn path_text(path: &Path) -> String {
+    path.segments
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+impl<'a> Program<'a> {
+    fn build(modules: &[&'a Module]) -> Self {
+        let mut p = Program {
+            tables: Vec::new(),
+            roots: Vec::new(),
+            imports: vec![HashMap::new(); modules.len()],
+            funcs: Vec::new(),
+            globals: Vec::new(),
+            types: TypeNames {
+                structs: Vec::new(),
+                enums: Vec::new(),
+            },
+            handlers: HashMap::new(),
+        };
+        for (file, module) in modules.iter().enumerate() {
+            let root = p.new_table(None);
+            p.roots.push(root);
+            p.declare(&module.items, root, file, "");
+        }
+        for (file, module) in modules.iter().enumerate() {
+            for item in &module.items {
+                if let Item::Import(imp) = item {
+                    if let Some(found) = p.find_exported(&imp.path.segments, file) {
+                        let last = &imp.path.segments[imp.path.segments.len() - 1];
+                        p.imports[file].insert(last.name.clone(), found);
+                    }
+                }
+            }
+        }
+        p
+    }
+
+    fn new_table(&mut self, parent: Option<usize>) -> usize {
+        self.tables.push(Table {
+            parent,
+            names: HashMap::new(),
+        });
+        self.tables.len() - 1
+    }
+
+    fn declare(&mut self, items: &'a [Item], table: usize, file: usize, prefix: &str) {
+        for item in items {
+            let (name, entity) = match item {
+                Item::Global(v) => {
+                    self.globals.push(GlobalInfo {
+                        name: format!("{prefix}{}", v.name.name),
+                        decl: v,
+                        table,
+                        file,
+                    });
+                    (&v.name.name, Entity::Global(self.globals.len() - 1))
+                }
+                Item::Func(f) => {
+                    self.funcs.push(FuncInfo {
+                        name: format!("{prefix}{}", f.name.name),
+                        decl: f,
+                        table,
+                        file,
+                    });
+                    (&f.name.name, Entity::Func(self.funcs.len() - 1))
+                }
+                Item::Scope(s) => {
+                    let child = self.new_table(Some(table));
+                    self.declare(&s.items, child, file, &format!("{prefix}{}.", s.name.name));
+                    (&s.name.name, Entity::Scope(child))
+                }
+                Item::Struct(s) => {
+                    self.types.structs.push(StructInfo {
+                        name: s.name.name.clone(),
+                        fields: s.fields.iter().map(|f| f.name.name.clone()).collect(),
+                    });
+                    (&s.name.name, Entity::Struct(self.types.structs.len() - 1))
+                }
+                Item::Enum(e) => {
+                    self.types.enums.push(EnumInfo {
+                        name: e.name.name.clone(),
+                        variants: e.variants.iter().map(|v| v.name.clone()).collect(),
+                    });
+                    (&e.name.name, Entity::Enum(self.types.enums.len() - 1))
+                }
+                Item::On(h) => {
+                    self.handlers
+                        .entry(path_text(&h.event))
+                        .or_default()
+                        .push(Handler {
+                            decl: h,
+                            table,
+                            file,
+                        });
+                    continue;
+                }
+                Item::Event(_) | Item::Import(_) => continue,
+            };
+            self.tables[table].names.insert(name.clone(), entity);
+        }
+    }
+
+    /// Même règle que `mcf_semantic` : l'élément est cherché depuis la racine des autres fichiers.
+    fn find_exported(&self, segments: &[Ident], from: usize) -> Option<(usize, String)> {
+        for (file, &root) in self.roots.iter().enumerate() {
+            if file == from {
+                continue;
+            }
+            let mut table = root;
+            for (i, seg) in segments.iter().enumerate() {
+                match self.tables[table].names.get(&seg.name) {
+                    Some(Entity::Scope(t)) if i + 1 < segments.len() => table = *t,
+                    Some(_) if i + 1 == segments.len() => return Some((table, seg.name.clone())),
+                    _ => break,
+                }
+            }
+        }
+        None
+    }
+
+    fn entry_point(&self) -> Option<usize> {
+        self.roots
+            .iter()
+            .find_map(|&root| match self.tables[root].names.get("main") {
+                Some(Entity::Func(id)) => Some(*id),
+                _ => None,
+            })
+    }
+}
+
+// ==================================================================== interpréteur
+
+/// Une variable locale : `None` tant qu'elle n'a pas reçu de valeur.
+type Locals = HashMap<String, Option<Value>>;
+
+struct CallFrame {
+    name: String,
+    file: usize,
+    table: usize,
+    called_at: Option<(usize, Span)>,
+    /// Blocs ouverts, du plus externe au plus interne.
+    blocks: Vec<Locals>,
+}
+
+enum Flow {
+    Next,
+    Break,
+    Continue,
+    Return(Value),
+}
+
+/// Type testé par `is`, résolu à l'exécution.
+enum Kind {
+    Int,
+    Float,
+    Bool,
+    String,
+    Array,
+    Map,
+    Struct(usize),
+    Enum(usize),
+    /// Type sans valeur possible aujourd'hui (`Char`, `Byte`, `Bytes`, `DateTime`).
+    NoValue,
+}
+
+struct Interp<'p, 'a, W: Write> {
+    p: &'p Program<'a>,
+    globals: Vec<Option<Value>>,
+    out: &'p mut W,
+    calls: Vec<CallFrame>,
+}
+
+impl<'p, 'a, W: Write> Interp<'p, 'a, W> {
+    fn start(&mut self) -> Res<()> {
+        let p = self.p;
+        let Some(main) = p.entry_point() else {
+            return Err(Box::new(RuntimeError {
+                file: None,
+                diagnostic: Diagnostic::new(
+                    &codes::MISSING_ENTRY_POINT,
+                    Span::new(0, 0),
+                    "le projet n'a pas de point d'entrée `main`",
+                )
+                .suggestion("ajouter `func main(): Void { ... }` à la racine d'un fichier"),
+                trace: Vec::new(),
+            }));
+        };
+        for (slot, g) in p.globals.iter().enumerate() {
+            self.calls.push(CallFrame {
+                name: format!("initialisation de `{}`", g.name),
+                file: g.file,
+                table: g.table,
+                called_at: None,
+                blocks: Vec::new(),
+            });
+            let value = match &g.decl.init {
+                Some(init) => Some(self.eval(init)?),
+                None => default_value(&g.decl.ty),
+            };
+            self.globals[slot] = value;
+            self.calls.pop();
+        }
+        self.call_func(main, Vec::new(), None)?;
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------- erreurs
+
+    fn frame(&self) -> &CallFrame {
+        self.calls.last().expect("un appel est toujours en cours")
+    }
+
+    fn error(
+        &self,
+        code: &'static Code,
+        span: Span,
+        message: impl Into<String>,
+    ) -> Box<RuntimeError> {
+        self.error_with(Diagnostic::new(code, span, message))
+    }
+
+    fn error_with(&self, diagnostic: Diagnostic) -> Box<RuntimeError> {
+        Box::new(RuntimeError {
+            file: self.calls.last().map(|f| f.file),
+            diagnostic,
+            trace: self
+                .calls
+                .iter()
+                .rev()
+                .map(|f| TraceFrame {
+                    function: f.name.clone(),
+                    called_at: f.called_at,
+                })
+                .collect(),
+        })
+    }
+
+    /// Situation que la vérification aurait dû empêcher.
+    fn internal(&self, span: Span, what: &str) -> Box<RuntimeError> {
+        self.error_with(
+            Diagnostic::new(
+                &codes::INTERNAL_RUNTIME_ERROR,
+                span,
+                format!("erreur interne de l'interpréteur : {what}"),
+            )
+            .suggestion(
+                "ce programme a passé la vérification : merci de signaler ce cas à MCF Studio",
+            ),
+        )
+    }
+
+    fn unset(&self, name: &str, span: Span) -> Box<RuntimeError> {
+        self.error_with(
+            Diagnostic::new(
+                &codes::UNINITIALIZED_VARIABLE,
+                span,
+                format!("`{name}` est lue avant d'avoir reçu une valeur"),
+            )
+            .suggestion(format!("donner une valeur à `{name}` dès sa déclaration")),
+        )
+    }
+
+    // ---------------------------------------------------------------- noms
+
+    fn find_local(&self, name: &str) -> Option<&Option<Value>> {
+        self.frame().blocks.iter().rev().find_map(|b| b.get(name))
+    }
+
+    fn find_local_mut(&mut self, name: &str) -> Option<&mut Option<Value>> {
+        let frame = self.calls.last_mut()?;
+        frame.blocks.iter_mut().rev().find_map(|b| b.get_mut(name))
+    }
+
+    /// Blocs locaux exclus : scopes englobants → racine du fichier → imports → natifs.
+    fn lookup(&self, name: &str) -> Option<Entity> {
+        let p = self.p;
+        let frame = self.frame();
+        let mut t = Some(frame.table);
+        while let Some(id) = t {
+            if let Some(e) = p.tables[id].names.get(name) {
+                return Some(*e);
+            }
+            t = p.tables[id].parent;
+        }
+        if let Some((t, n)) = p.imports[frame.file].get(name) {
+            return p.tables[*t].names.get(n).copied();
+        }
+        match name {
+            "print" => Some(Entity::Builtin(Builtin::Print)),
+            "sleep" => Some(Entity::Builtin(Builtin::Sleep)),
+            _ => None,
+        }
+    }
+
+    fn resolve_path(&self, path: &Path) -> Option<Entity> {
+        let mut entity = self.lookup(&path.segments[0].name)?;
+        for seg in &path.segments[1..] {
+            let Entity::Scope(t) = entity else {
+                return None;
+            };
+            entity = *self.p.tables[t].names.get(&seg.name)?;
+        }
+        Some(entity)
+    }
+
+    /// Ce que désigne `expr` s'il s'agit d'un nom déclaré (pas d'une valeur locale).
+    /// Ne s'évalue pas : un chemin `A.B.c` n'a pas d'effet de bord.
+    fn entity_of(&self, expr: &Expr) -> Option<Entity> {
+        match &expr.kind {
+            ExprKind::Name { ident } => {
+                if self.find_local(&ident.name).is_some() {
+                    None
+                } else {
+                    self.lookup(&ident.name)
+                }
+            }
+            ExprKind::Member { object, field } => match self.entity_of(object)? {
+                Entity::Scope(t) => self.p.tables[t].names.get(&field.name).copied(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn read_global(&self, slot: usize, span: Span) -> Res<Value> {
+        self.globals[slot]
+            .clone()
+            .ok_or_else(|| self.unset(&self.p.globals[slot].name, span))
+    }
+
+    // ---------------------------------------------------------------- appels
+
+    fn call_func(
+        &mut self,
+        id: usize,
+        args: Vec<Value>,
+        called_at: Option<(usize, Span)>,
+    ) -> Res<Value> {
+        let p = self.p;
+        let f = &p.funcs[id];
+        if self.calls.len() >= MAX_CALL_DEPTH {
+            let span = called_at.map_or(f.decl.name.span, |(_, s)| s);
+            return Err(self.error_with(
+                Diagnostic::new(
+                    &codes::STACK_OVERFLOW,
+                    span,
+                    format!("récursion trop profonde : plus de {MAX_CALL_DEPTH} appels imbriqués"),
+                )
+                .suggestion("vérifier la condition d'arrêt de la fonction récursive"),
+            ));
+        }
+        let locals: Locals = f
+            .decl
+            .params
+            .iter()
+            .zip(args)
+            .map(|(param, v)| (param.name.name.clone(), Some(v)))
+            .collect();
+        self.calls.push(CallFrame {
+            name: f.name.clone(),
+            file: f.file,
+            table: f.table,
+            called_at,
+            blocks: vec![locals],
+        });
+        let flow = self.exec_block(&f.decl.body)?;
+        self.calls.pop();
+        Ok(match flow {
+            Flow::Return(v) => v,
+            _ => Value::Void,
+        })
+    }
+
+    /// `emit` : les gestionnaires `on` s'exécutent tout de suite, dans l'ordre du projet
+    /// (DECISIONS D32 ; l'asynchrone arrive en phase 8).
+    fn emit(&mut self, event: &Path, args: Vec<Value>, span: Span) -> Res<()> {
+        let p = self.p;
+        let name = path_text(event);
+        let Some(handlers) = p.handlers.get(&name) else {
+            return Ok(());
+        };
+        let called_at = Some((self.frame().file, span));
+        for h in handlers {
+            if self.calls.len() >= MAX_CALL_DEPTH {
+                return Err(self.error(
+                    &codes::STACK_OVERFLOW,
+                    span,
+                    format!("trop d'événements imbriqués : plus de {MAX_CALL_DEPTH} appels"),
+                ));
+            }
+            let locals: Locals = h
+                .decl
+                .bindings
+                .iter()
+                .zip(args.iter().cloned())
+                .map(|(b, v)| (b.name.clone(), Some(v)))
+                .collect();
+            self.calls.push(CallFrame {
+                name: format!("on {name}"),
+                file: h.file,
+                table: h.table,
+                called_at,
+                blocks: vec![locals],
+            });
+            self.exec_block(&h.decl.body)?;
+            self.calls.pop();
+        }
+        Ok(())
+    }
+
+    fn call_builtin(&mut self, b: Builtin, args: Vec<Value>, arg_spans: &[Span]) -> Res<Value> {
+        let [arg] = args.as_slice() else {
+            return Err(self.internal(
+                arg_spans.first().copied().unwrap_or(Span::new(0, 0)),
+                "nombre d'arguments",
+            ));
+        };
+        match b {
+            Builtin::Print => {
+                let text = display(arg, &self.p.types);
+                if writeln!(self.out, "{text}").is_err() {
+                    return Err(self.error(
+                        &codes::OUTPUT_ERROR,
+                        arg_spans[0],
+                        "impossible d'écrire sur la sortie",
+                    ));
+                }
+            }
+            Builtin::Sleep => {
+                let Value::Int(ms) = arg else {
+                    return Err(self.internal(arg_spans[0], "`sleep` sans entier"));
+                };
+                let Ok(ms) = u64::try_from(*ms) else {
+                    return Err(self.error_with(
+                        Diagnostic::new(
+                            &codes::INVALID_ARGUMENT,
+                            arg_spans[0],
+                            "`sleep` attend une durée positive ou nulle (millisecondes)",
+                        )
+                        .received(ms.to_string()),
+                    ));
+                };
+                let _ = self.out.flush();
+                std::thread::sleep(Duration::from_millis(ms));
+            }
+        }
+        Ok(Value::Void)
+    }
+
+    // ---------------------------------------------------------------- instructions
+
+    fn exec_block(&mut self, block: &Block) -> Res<Flow> {
+        self.calls
+            .last_mut()
+            .expect("un appel est en cours")
+            .blocks
+            .push(Locals::new());
+        let mut flow = Flow::Next;
+        for stmt in &block.stmts {
+            flow = self.exec_stmt(stmt)?;
+            if !matches!(flow, Flow::Next) {
+                break;
+            }
+        }
+        self.calls
+            .last_mut()
+            .expect("un appel est en cours")
+            .blocks
+            .pop();
+        Ok(flow)
+    }
+
+    fn declare_local(&mut self, name: &str, value: Option<Value>) {
+        if let Some(block) = self.calls.last_mut().and_then(|f| f.blocks.last_mut()) {
+            block.insert(name.to_string(), value);
+        }
+    }
+
+    fn exec_stmt(&mut self, stmt: &Stmt) -> Res<Flow> {
+        match stmt {
+            Stmt::Local(v) => {
+                // La valeur est calculée avant la déclaration (comme à la vérification).
+                let value = match &v.init {
+                    Some(init) => Some(self.eval(init)?),
+                    None => default_value(&v.ty),
+                };
+                self.declare_local(&v.name.name, value);
+            }
+            Stmt::Assign { target, value, .. } => self.assign(target, value)?,
+            Stmt::If(i) => return self.exec_if(i),
+            Stmt::While { cond, body, .. } => {
+                while self.eval_bool(cond)? {
+                    match self.exec_block(body)? {
+                        Flow::Break => break,
+                        Flow::Return(v) => return Ok(Flow::Return(v)),
+                        Flow::Next | Flow::Continue => {}
+                    }
+                }
+            }
+            Stmt::For {
+                init,
+                cond,
+                step,
+                body,
+                ..
+            } => {
+                self.calls
+                    .last_mut()
+                    .expect("appel en cours")
+                    .blocks
+                    .push(Locals::new());
+                let result = self.exec_for(init, cond, step, body);
+                self.calls.last_mut().expect("appel en cours").blocks.pop();
+                return result;
+            }
+            Stmt::Foreach {
+                binding,
+                iter,
+                body,
+                ..
+            } => {
+                // On parcourt le contenu tel qu'il est au début de la boucle.
+                let items: Vec<Value> = match self.eval(iter)? {
+                    Value::Array(a) => a.borrow().clone(),
+                    Value::Map(m) => m.borrow().iter().map(|(k, _)| k.clone()).collect(),
+                    _ => {
+                        return Err(
+                            self.internal(iter.span, "`foreach` sur une valeur non parcourable")
+                        )
+                    }
+                };
+                for item in items {
+                    self.calls
+                        .last_mut()
+                        .expect("appel en cours")
+                        .blocks
+                        .push(Locals::new());
+                    self.declare_local(&binding.name, Some(item));
+                    let flow = self.exec_block(body);
+                    self.calls.last_mut().expect("appel en cours").blocks.pop();
+                    match flow? {
+                        Flow::Break => break,
+                        Flow::Return(v) => return Ok(Flow::Return(v)),
+                        Flow::Next | Flow::Continue => {}
+                    }
+                }
+            }
+            Stmt::Return { value, .. } => {
+                let v = match value {
+                    Some(e) => self.eval(e)?,
+                    None => Value::Void,
+                };
+                return Ok(Flow::Return(v));
+            }
+            Stmt::Break { .. } => return Ok(Flow::Break),
+            Stmt::Continue { .. } => return Ok(Flow::Continue),
+            Stmt::Emit { event, args, span } => {
+                let values = args.iter().map(|a| self.eval(a)).collect::<Res<Vec<_>>>()?;
+                self.emit(event, values, *span)?;
+            }
+            Stmt::Expr { expr, .. } => {
+                self.eval(expr)?;
+            }
+        }
+        Ok(Flow::Next)
+    }
+
+    fn exec_for(&mut self, init: &VarDecl, cond: &Expr, step: &Stmt, body: &Block) -> Res<Flow> {
+        self.exec_stmt(&Stmt::Local(init.clone()))?;
+        while self.eval_bool(cond)? {
+            match self.exec_block(body)? {
+                Flow::Break => break,
+                Flow::Return(v) => return Ok(Flow::Return(v)),
+                Flow::Next | Flow::Continue => {}
+            }
+            self.exec_stmt(step)?;
+        }
+        Ok(Flow::Next)
+    }
+
+    fn exec_if(&mut self, i: &IfStmt) -> Res<Flow> {
+        if self.eval_bool(&i.cond)? {
+            self.exec_block(&i.then_block)
+        } else {
+            match &i.else_branch {
+                Some(Else::Block(b)) => self.exec_block(b),
+                Some(Else::If(nested)) => self.exec_if(nested),
+                None => Ok(Flow::Next),
+            }
+        }
+    }
+
+    fn assign(&mut self, target: &Expr, value: &Expr) -> Res<()> {
+        match &target.kind {
+            ExprKind::Paren { expr } => self.assign(expr, value),
+            ExprKind::Name { ident } => {
+                let v = self.eval(value)?;
+                if let Some(slot) = self.find_local_mut(&ident.name) {
+                    *slot = Some(v);
+                    return Ok(());
+                }
+                match self.lookup(&ident.name) {
+                    Some(Entity::Global(slot)) => {
+                        self.globals[slot] = Some(v);
+                        Ok(())
+                    }
+                    _ => Err(self.internal(target.span, "cible d'affectation inconnue")),
+                }
+            }
+            ExprKind::Member { object, field } => {
+                if let Some(Entity::Scope(t)) = self.entity_of(object) {
+                    let v = self.eval(value)?;
+                    return match self.p.tables[t].names.get(&field.name) {
+                        Some(Entity::Global(slot)) => {
+                            self.globals[*slot] = Some(v);
+                            Ok(())
+                        }
+                        _ => Err(self.internal(field.span, "membre de scope non affectable")),
+                    };
+                }
+                let obj = self.eval(object)?;
+                let v = self.eval(value)?;
+                let Value::Struct(s) = obj else {
+                    return Err(self.internal(
+                        object.span,
+                        "champ d'une valeur qui n'est pas une structure",
+                    ));
+                };
+                let index = self.field_index(&s.borrow(), field)?;
+                s.borrow_mut().fields[index] = v;
+                Ok(())
+            }
+            ExprKind::Index { object, index } => {
+                let obj = self.eval(object)?;
+                let key = self.eval(index)?;
+                let v = self.eval(value)?;
+                match obj {
+                    Value::Array(a) => {
+                        let i = self.array_index(&a.borrow(), &key, index.span)?;
+                        a.borrow_mut()[i] = v;
+                        Ok(())
+                    }
+                    Value::Map(m) => {
+                        let mut m = m.borrow_mut();
+                        match m.iter_mut().find(|(k, _)| equal(k, &key)) {
+                            Some((_, slot)) => *slot = v,
+                            None => m.push((key, v)),
+                        }
+                        Ok(())
+                    }
+                    _ => Err(self.internal(object.span, "`[]` sur une valeur non indexable")),
+                }
+            }
+            _ => Err(self.internal(target.span, "cible d'affectation invalide")),
+        }
+    }
+
+    fn field_index(&self, s: &StructValue, field: &Ident) -> Res<usize> {
+        self.p.types.structs[s.id]
+            .fields
+            .iter()
+            .position(|f| *f == field.name)
+            .ok_or_else(|| self.internal(field.span, "champ inconnu"))
+    }
+
+    fn array_index(&self, items: &[Value], key: &Value, span: Span) -> Res<usize> {
+        let Value::Int(i) = key else {
+            return Err(self.internal(span, "index de tableau non entier"));
+        };
+        usize::try_from(*i)
+            .ok()
+            .filter(|&i| i < items.len())
+            .ok_or_else(|| {
+                self.error_with(
+                    Diagnostic::new(
+                        &codes::INDEX_OUT_OF_BOUNDS,
+                        span,
+                        format!("index {i} hors du tableau ({} élément(s))", items.len()),
+                    )
+                    .expected(if items.is_empty() {
+                        "aucun index : le tableau est vide".to_string()
+                    } else {
+                        format!("un index entre 0 et {}", items.len() - 1)
+                    })
+                    .received(i.to_string()),
+                )
+            })
+    }
+
+    // ---------------------------------------------------------------- expressions
+
+    fn eval_bool(&mut self, cond: &Expr) -> Res<bool> {
+        match self.eval(cond)? {
+            Value::Bool(b) => Ok(b),
+            _ => Err(self.internal(cond.span, "condition non booléenne")),
+        }
+    }
+
+    fn eval(&mut self, expr: &Expr) -> Res<Value> {
+        match &expr.kind {
+            ExprKind::Int { text } => text
+                .parse()
+                .map(Value::Int)
+                .map_err(|_| self.internal(expr.span, "entier invalide")),
+            ExprKind::Float { text } => text
+                .parse()
+                .map(Value::Float)
+                .map_err(|_| self.internal(expr.span, "décimal invalide")),
+            ExprKind::Str { value } => Ok(Value::Str(value.as_str().into())),
+            ExprKind::Bool { value } => Ok(Value::Bool(*value)),
+            ExprKind::Paren { expr } => self.eval(expr),
+            ExprKind::Name { ident } => {
+                if let Some(local) = self.find_local(&ident.name) {
+                    return local
+                        .clone()
+                        .ok_or_else(|| self.unset(&ident.name, expr.span));
+                }
+                match self.lookup(&ident.name) {
+                    Some(Entity::Global(slot)) => self.read_global(slot, expr.span),
+                    _ => Err(self.internal(expr.span, "nom qui n'est pas une valeur")),
+                }
+            }
+            ExprKind::Member { object, field } => {
+                match self.entity_of(object) {
+                    Some(Entity::Scope(t)) => {
+                        return match self.p.tables[t].names.get(&field.name) {
+                            Some(Entity::Global(slot)) => self.read_global(*slot, expr.span),
+                            _ => Err(self
+                                .internal(field.span, "membre de scope qui n'est pas une valeur")),
+                        };
+                    }
+                    Some(Entity::Enum(id)) => {
+                        return self.p.types.enums[id]
+                            .variants
+                            .iter()
+                            .position(|v| *v == field.name)
+                            .map(|variant| Value::Enum { id, variant })
+                            .ok_or_else(|| self.internal(field.span, "variante inconnue"));
+                    }
+                    _ => {}
+                }
+                match self.eval(object)? {
+                    Value::Struct(s) => {
+                        let s = s.borrow();
+                        let i = self.field_index(&s, field)?;
+                        Ok(s.fields[i].clone())
+                    }
+                    _ => Err(self.internal(object.span, "membre d'une valeur sans membres")),
+                }
+            }
+            ExprKind::Index { object, index } => {
+                let obj = self.eval(object)?;
+                let key = self.eval(index)?;
+                match obj {
+                    Value::Array(a) => {
+                        let a = a.borrow();
+                        let i = self.array_index(&a, &key, index.span)?;
+                        Ok(a[i].clone())
+                    }
+                    Value::Map(m) => m
+                        .borrow()
+                        .iter()
+                        .find(|(k, _)| equal(k, &key))
+                        .map(|(_, v)| v.clone())
+                        .ok_or_else(|| {
+                            self.error_with(
+                                Diagnostic::new(
+                                    &codes::MISSING_MAP_KEY,
+                                    index.span,
+                                    format!(
+                                        "la clé {} n'existe pas dans la map",
+                                        quoted(&key, &self.p.types)
+                                    ),
+                                )
+                                .suggestion(
+                                    "lui donner une valeur avant de la lire : `map[clé] = valeur;`",
+                                ),
+                            )
+                        }),
+                    _ => Err(self.internal(object.span, "`[]` sur une valeur non indexable")),
+                }
+            }
+            ExprKind::Array { items } => {
+                let values = items
+                    .iter()
+                    .map(|i| self.eval(i))
+                    .collect::<Res<Vec<_>>>()?;
+                Ok(Value::new_array(values))
+            }
+            ExprKind::StructLit { path, fields } => {
+                let Some(Entity::Struct(id)) = self.resolve_path(path) else {
+                    return Err(
+                        self.internal(path.span, "littéral sur autre chose qu'une structure")
+                    );
+                };
+                // Les valeurs sont calculées dans l'ordre où elles sont écrites.
+                let mut given = Vec::with_capacity(fields.len());
+                for f in fields {
+                    given.push((f.name.name.as_str(), self.eval(&f.value)?));
+                }
+                let names = &self.p.types.structs[id].fields;
+                let mut values = Vec::with_capacity(names.len());
+                for name in names {
+                    match given.iter().position(|(n, _)| n == name) {
+                        Some(i) => values.push(given.swap_remove(i).1),
+                        None => return Err(self.internal(path.span, "champ manquant")),
+                    }
+                }
+                Ok(Value::Struct(std::rc::Rc::new(std::cell::RefCell::new(
+                    StructValue { id, fields: values },
+                ))))
+            }
+            ExprKind::Call { callee, args } => {
+                let target = self.entity_of(callee);
+                let values = args.iter().map(|a| self.eval(a)).collect::<Res<Vec<_>>>()?;
+                let called_at = Some((self.frame().file, expr.span));
+                match target {
+                    Some(Entity::Func(id)) => self.call_func(id, values, called_at),
+                    Some(Entity::Builtin(b)) => {
+                        let spans: Vec<Span> = args.iter().map(|a| a.span).collect();
+                        self.call_builtin(b, values, &spans)
+                    }
+                    _ => Err(self.internal(
+                        callee.span,
+                        "appel de quelque chose qui n'est pas une fonction",
+                    )),
+                }
+            }
+            ExprKind::Unary { op, expr: inner } => {
+                let v = self.eval(inner)?;
+                match (op, v) {
+                    (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+                    (UnaryOp::Neg, Value::Float(f)) => Ok(Value::Float(-f)),
+                    (UnaryOp::Neg, Value::Int(i)) => i
+                        .checked_neg()
+                        .map(Value::Int)
+                        .ok_or_else(|| self.overflow(expr.span, "-")),
+                    _ => Err(self.internal(expr.span, "opérateur unaire impossible")),
+                }
+            }
+            ExprKind::Binary { op, lhs, rhs } => self.eval_binary(*op, lhs, rhs, expr.span),
+            ExprKind::Is { expr: inner, ty } => {
+                let v = self.eval(inner)?;
+                let kind = self.kind_of(ty)?;
+                Ok(Value::Bool(value_is(&v, &kind)))
+            }
+            ExprKind::Error => Err(self.internal(expr.span, "expression invalide")),
+        }
+    }
+
+    fn kind_of(&self, ty: &TypeRef) -> Res<Kind> {
+        if let [seg] = ty.path.segments.as_slice() {
+            let builtin = match seg.name.as_str() {
+                "Int" => Some(Kind::Int),
+                "Float" => Some(Kind::Float),
+                "Bool" => Some(Kind::Bool),
+                "String" => Some(Kind::String),
+                "Array" => Some(Kind::Array),
+                "Map" => Some(Kind::Map),
+                "Char" | "Byte" | "Bytes" | "DateTime" => Some(Kind::NoValue),
+                _ => None,
+            };
+            if let Some(k) = builtin {
+                return Ok(k);
+            }
+        }
+        match self.resolve_path(&ty.path) {
+            Some(Entity::Struct(id)) => Ok(Kind::Struct(id)),
+            Some(Entity::Enum(id)) => Ok(Kind::Enum(id)),
+            _ => Err(self.internal(ty.span, "type testé inconnu")),
+        }
+    }
+
+    fn overflow(&self, span: Span, op: &str) -> Box<RuntimeError> {
+        self.error_with(
+            Diagnostic::new(
+                &codes::RUNTIME_INTEGER_OVERFLOW,
+                span,
+                format!("`{op}` dépasse la plage de `Int` (64 bits signé)"),
+            )
+            .suggestion("utiliser `Float` pour de très grandes valeurs"),
+        )
+    }
+
+    fn eval_binary(&mut self, op: BinaryOp, lhs: &Expr, rhs: &Expr, span: Span) -> Res<Value> {
+        use BinaryOp::*;
+        // `&&` et `||` n'évaluent leur droite que si nécessaire.
+        if matches!(op, And | Or) {
+            let l = self.eval_bool(lhs)?;
+            if (op == And && !l) || (op == Or && l) {
+                return Ok(Value::Bool(l));
+            }
+            return self.eval_bool(rhs).map(Value::Bool);
+        }
+        let l = self.eval(lhs)?;
+        let r = self.eval(rhs)?;
+        let symbol = match op {
+            Eq => return Ok(Value::Bool(equal(&l, &r))),
+            NotEq => return Ok(Value::Bool(!equal(&l, &r))),
+            Lt => "<",
+            Gt => ">",
+            Le => "<=",
+            Ge => ">=",
+            Add => "+",
+            Sub => "-",
+            Mul => "*",
+            Div => "/",
+            Rem => "%",
+            And | Or => unreachable!("traités plus haut"),
+        };
+        // Concaténation (DECISIONS D22).
+        if op == Add && (matches!(l, Value::Str(_)) || matches!(r, Value::Str(_))) {
+            let mut s = display(&l, &self.p.types);
+            s.push_str(&display(&r, &self.p.types));
+            return Ok(Value::Str(s.into()));
+        }
+        match (&l, &r) {
+            (Value::Int(a), Value::Int(b)) => {
+                let (a, b) = (*a, *b);
+                let v = match op {
+                    Lt => return Ok(Value::Bool(a < b)),
+                    Gt => return Ok(Value::Bool(a > b)),
+                    Le => return Ok(Value::Bool(a <= b)),
+                    Ge => return Ok(Value::Bool(a >= b)),
+                    Add => a.checked_add(b),
+                    Sub => a.checked_sub(b),
+                    Mul => a.checked_mul(b),
+                    Div | Rem if b == 0 => {
+                        return Err(self.error_with(
+                            Diagnostic::new(
+                                &codes::DIVISION_BY_ZERO,
+                                rhs.span,
+                                format!("`{symbol}` par zéro"),
+                            )
+                            .suggestion("vérifier le diviseur avant le calcul"),
+                        ))
+                    }
+                    Div => a.checked_div(b),
+                    Rem => a.checked_rem(b),
+                    _ => return Err(self.internal(span, "opérateur entier")),
+                };
+                v.map(Value::Int).ok_or_else(|| self.overflow(span, symbol))
+            }
+            // Promotion Int → Float dans un calcul (DECISIONS D23) ; règles IEEE 754.
+            (Value::Int(_) | Value::Float(_), Value::Int(_) | Value::Float(_)) => {
+                let (a, b) = (as_f64(&l), as_f64(&r));
+                Ok(match op {
+                    Lt => Value::Bool(a < b),
+                    Gt => Value::Bool(a > b),
+                    Le => Value::Bool(a <= b),
+                    Ge => Value::Bool(a >= b),
+                    Add => Value::Float(a + b),
+                    Sub => Value::Float(a - b),
+                    Mul => Value::Float(a * b),
+                    Div => Value::Float(a / b),
+                    Rem => Value::Float(a % b),
+                    _ => return Err(self.internal(span, "opérateur décimal")),
+                })
+            }
+            _ => Err(self.internal(span, "opérandes incompatibles")),
+        }
+    }
+}
+
+fn as_f64(v: &Value) -> f64 {
+    match v {
+        Value::Int(i) => *i as f64,
+        Value::Float(f) => *f,
+        _ => f64::NAN,
+    }
+}
+
+fn quoted(v: &Value, names: &TypeNames) -> String {
+    match v {
+        Value::Str(s) => format!("{:?}", &**s),
+        other => display(other, names),
+    }
+}
+
+fn value_is(v: &Value, kind: &Kind) -> bool {
+    match (v, kind) {
+        (Value::Int(_), Kind::Int)
+        | (Value::Float(_), Kind::Float)
+        | (Value::Bool(_), Kind::Bool)
+        | (Value::Str(_), Kind::String)
+        | (Value::Array(_), Kind::Array)
+        | (Value::Map(_), Kind::Map) => true,
+        (Value::Struct(s), Kind::Struct(id)) => s.borrow().id == *id,
+        (Value::Enum { id, .. }, Kind::Enum(k)) => id == k,
+        _ => false,
+    }
+}
+
+/// Valeur d'une variable déclarée sans valeur : un tableau ou une map simples démarrent vides,
+/// toute autre variable reste sans valeur jusqu'à sa première affectation (DECISIONS D31).
+fn default_value(ty: &TypeDecl) -> Option<Value> {
+    let [single] = ty.types.as_slice() else {
+        return None;
+    };
+    let [seg] = single.path.segments.as_slice() else {
+        return None;
+    };
+    match seg.name.as_str() {
+        "Array" => Some(Value::new_array(Vec::new())),
+        "Map" => Some(Value::new_map()),
+        _ => None,
+    }
+}

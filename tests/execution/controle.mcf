@@ -1,0 +1,58 @@
+// Boucles, break, continue, return depuis une boucle
+names: Array<String> = ["Alex", "Max", "Tom"];
+ages: Map<String, Int>;
+
+func firstLong(_min: Int): String {
+    foreach (_n in names) do {
+        if (_n == "Max") then {
+            continue;
+        }
+        if (_n == "Tom") then {
+            return _n;
+        }
+    }
+    return "aucun";
+}
+
+func main(): Void {
+    _total: Int = 0;
+    for (_i: Int = 0; _i < 10; _i = _i + 1) do {
+        if (_i == 2) then {
+            continue;
+        }
+        if (_i == 5) then {
+            break;
+        }
+        _total = _total + _i;
+    }
+    print(_total);
+
+    _n: Int = 3;
+    while (_n > 0) do {
+        print(_n);
+        _n = _n - 1;
+    }
+
+    print(firstLong(3));
+
+    ages["Alex"] = 30;
+    ages["Max"] = 25;
+    ages["Alex"] = 31;
+    foreach (_name in ages) do {
+        print(_name + " : " + ages[_name]);
+    }
+    print(ages);
+
+    names[1] = "Zoé";
+    print(names);
+
+    if (_n == 1) then {
+        print("un");
+    }
+    else if (_n == 0) then {
+        print("zéro");
+    }
+    else {
+        print("autre");
+    }
+}

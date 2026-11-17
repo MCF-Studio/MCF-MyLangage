@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["compiler/diagnostics", "compiler/syntax", "compiler/semantic", "cli"]
+members = ["compiler/diagnostics", "compiler/syntax", "compiler/semantic", "compiler/runtime", "cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,6 +17,7 @@ serde_json = "1"
 mcf-diagnostics = { path = "compiler/diagnostics" }
 mcf-syntax = { path = "compiler/syntax" }
 mcf-semantic = { path = "compiler/semantic" }
+mcf-runtime = { path = "compiler/runtime" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

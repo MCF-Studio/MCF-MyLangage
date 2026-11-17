@@ -1,0 +1,9 @@
+import Shop;
+import greet;
+
+func main(): Void {
+    greet("Alex");
+    _item: Shop.Item = Shop.Item { name: "Épée", price: 12.5 };
+    print(Shop.describe(_item));
+    print(Shop.count);
+}

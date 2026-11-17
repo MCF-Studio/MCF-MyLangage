@@ -1,0 +1,20 @@
+[package]
+name = "mcf-runtime"
+description = "Exécution des programmes MCF : interpréteur (`mcf run`)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+mcf-diagnostics.workspace = true
+mcf-syntax.workspace = true
+
+[dev-dependencies]
+mcf-semantic.workspace = true
+
+[lints]
+workspace = true

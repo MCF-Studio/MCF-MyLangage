@@ -1,0 +1,5 @@
+// erreur: MCF0402
+func main(): Void {
+    _x: Int = 9223372036854775807;
+    print(_x + 1);
+}

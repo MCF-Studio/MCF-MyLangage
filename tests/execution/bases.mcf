@@ -1,0 +1,24 @@
+// Calculs, concaténation, comparaisons, logique
+func yes(): Bool {
+    print("évalué");
+    return true;
+}
+
+func main(): Void {
+    print(7 / 2);
+    print(-7 % 3);
+    print(7 / 2.0);
+    print(1 + 2 * 3);
+    print(10.0);
+    print(0.1 + 0.2);
+    print("score : " + 42);
+    print("prix : " + 2.5 + " €");
+    print(3 == 3.0);
+    print(2 < 1.5);
+    print("a" == "a");
+    print(!true);
+    print(false && yes());
+    print(true || yes());
+    print(true && yes());
+    print("ligne\ttab \u{1F600}");
+}

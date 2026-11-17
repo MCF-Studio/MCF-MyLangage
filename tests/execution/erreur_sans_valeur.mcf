@@ -1,0 +1,5 @@
+// erreur: MCF0405
+func main(): Void {
+    _x: Int;
+    print(_x);
+}

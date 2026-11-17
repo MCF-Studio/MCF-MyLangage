@@ -1,0 +1,2 @@
+// attendu: MCF0203
+values: Array<Int>, Array<String> = [1];

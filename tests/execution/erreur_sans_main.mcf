@@ -1,0 +1,3 @@
+// erreur: MCF0400
+func helper(): Void {
+}

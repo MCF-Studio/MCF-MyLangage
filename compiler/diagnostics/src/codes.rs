@@ -1,6 +1,7 @@
 //! Registre des identifiants de diagnostics.
 //!
-//! Plages : 00xx lexical, 01xx syntaxe, 02xx sémantique/types (à venir), 03xx sécurité.
+//! Plages : 00xx lexical, 01xx syntaxe, 02xx sémantique/types, 03xx sécurité (à venir),
+//! 04xx exécution (`mcf run`).
 
 use crate::{Category, Severity};
 use serde::Serialize;
@@ -86,6 +87,7 @@ codes! {
     INTEGER_OVERFLOW = "MCF0229", Type, Error, "Entier hors de la plage de `Int` (64 bits signé).";
     INVALID_OPERANDS = "MCF0230", Type, Error, "Opérateur impossible avec ces types.";
     NOT_CALLABLE = "MCF0231", Type, Error, "Cette valeur n'est pas une fonction.";
+    NOT_A_VALUE = "MCF0232", Type, Error, "Une fonction, un scope ou un type utilisé comme une valeur.";
 
     MISSING_FIELD = "MCF0240", Type, Error, "Champ obligatoire absent d'un littéral de structure.";
     UNKNOWN_FIELD = "MCF0241", Type, Error, "La structure ne possède pas ce champ.";
@@ -97,4 +99,15 @@ codes! {
 
     INVALID_ENTRY_POINT = "MCF0250", Semantic, Error, "`main` à la racine d'un fichier doit être `func main(): Void` sans paramètre.";
     DUPLICATE_ENTRY_POINT = "MCF0251", Semantic, Error, "Plusieurs points d'entrée `main` dans le même projet.";
+
+    MISSING_ENTRY_POINT = "MCF0400", Runtime, Error, "Projet exécuté sans `func main(): Void`.";
+    DIVISION_BY_ZERO = "MCF0401", Runtime, Error, "Division ou reste entier par zéro.";
+    RUNTIME_INTEGER_OVERFLOW = "MCF0402", Runtime, Error, "Calcul entier hors de la plage de `Int` (64 bits signé).";
+    INDEX_OUT_OF_BOUNDS = "MCF0403", Runtime, Error, "Index hors du tableau.";
+    MISSING_MAP_KEY = "MCF0404", Runtime, Error, "Lecture d'une clé absente d'une map.";
+    UNINITIALIZED_VARIABLE = "MCF0405", Runtime, Error, "Variable lue avant d'avoir reçu une valeur.";
+    STACK_OVERFLOW = "MCF0406", Runtime, Error, "Récursion trop profonde.";
+    INVALID_ARGUMENT = "MCF0407", Runtime, Error, "Argument refusé par une fonction native.";
+    OUTPUT_ERROR = "MCF0408", Runtime, Error, "Écriture impossible sur la sortie.";
+    INTERNAL_RUNTIME_ERROR = "MCF0499", Runtime, Error, "Erreur interne de l'interpréteur (à signaler).";
 }

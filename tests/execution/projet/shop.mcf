@@ -1,0 +1,16 @@
+scope Shop {
+    count: Int = 3;
+
+    struct Item {
+        name: String;
+        price: Float;
+    }
+
+    func describe(_item: Item): String {
+        return _item.name + " : " + _item.price;
+    }
+}
+
+func greet(_name: String): Void {
+    print("Bonjour " + _name);
+}

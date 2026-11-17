@@ -1,0 +1,8 @@
+// erreur: MCF0406
+func loop(_n: Int): Int {
+    return loop(_n + 1);
+}
+
+func main(): Void {
+    print(loop(0));
+}

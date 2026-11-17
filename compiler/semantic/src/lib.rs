@@ -406,6 +406,21 @@ impl Analyzer {
                         );
                     }
                     a.clone()
+                } else if matches!(
+                    (a, b),
+                    (Ty::Array(_), Ty::Array(_)) | (Ty::Map(..), Ty::Map(..))
+                ) {
+                    if report {
+                        self.report(
+                            Diagnostic::new(
+                                &codes::DUPLICATE_DUAL_TYPE,
+                                decl.span,
+                                format!("DualType `{a}, {b}` : deux collections de même sorte ne se distinguent pas avec `is`"),
+                            )
+                            .suggestion("garder une seule collection, ou combiner une collection et un type simple"),
+                        );
+                    }
+                    Ty::Unknown
                 } else if a.is_unknown() || b.is_unknown() {
                     Ty::Unknown
                 } else {
@@ -1280,7 +1295,7 @@ impl Analyzer {
                 }
             }
             Stmt::Assign { target, value, .. } => {
-                let t = self.check_expr(target, table);
+                let t = self.check_any(target, table);
                 if let Resolved::Sym(
                     sym @ (Sym::Func { .. }
                     | Sym::Scope { .. }
@@ -1437,7 +1452,34 @@ impl Analyzer {
 
     // ---------------------------------------------------------------- expressions
 
+    /// Expression utilisée comme valeur : une fonction, un scope ou un type n'en est pas une.
     fn check_expr(&mut self, expr: &Expr, table: usize) -> Typed {
+        let t = self.check_any(expr, table);
+        match &t.res {
+            Resolved::Sym(Sym::Global { .. }) | Resolved::Local | Resolved::Opaque => t,
+            Resolved::Sym(sym) => {
+                let suggestion = match sym {
+                    Sym::Func { .. } | Sym::Builtin(_) => "l'appeler : `nom(...)`",
+                    Sym::Enum { .. } => "choisir une variante : `Nom.Variante`",
+                    Sym::Struct { .. } => "créer une valeur : `Nom { champ: valeur, ... }`",
+                    _ => "utiliser l'un de ses membres : `Scope.membre`",
+                };
+                self.report(
+                    Diagnostic::new(
+                        &codes::NOT_A_VALUE,
+                        expr.span,
+                        format!("{} n'est pas une valeur", sym.describe()),
+                    )
+                    .suggestion(suggestion),
+                );
+                Typed::value(Ty::Unknown)
+            }
+        }
+    }
+
+    /// Expression quelconque, y compris un nom qui désigne une fonction, un scope ou un type
+    /// (appelé, parcouru avec `.` ou cible d'affectation).
+    fn check_any(&mut self, expr: &Expr, table: usize) -> Typed {
         match &expr.kind {
             ExprKind::Int { text } => {
                 if text.parse::<i64>().is_err() {
@@ -1582,7 +1624,7 @@ impl Analyzer {
     }
 
     fn check_member(&mut self, object: &Expr, field: &Ident, table: usize) -> Typed {
-        let obj = self.check_expr(object, table);
+        let obj = self.check_any(object, table);
         match (&obj.res, &obj.ty) {
             // `Scope.membre`
             (Resolved::Sym(Sym::Scope { table: scope }), _) => {
@@ -1768,7 +1810,7 @@ impl Analyzer {
     }
 
     fn check_call(&mut self, expr: &Expr, callee: &Expr, args: &[Expr], table: usize) -> Typed {
-        let c = self.check_expr(callee, table);
+        let c = self.check_any(callee, table);
         let arg_tys: Vec<(Ty, Span)> = args
             .iter()
             .map(|a| (self.check_expr(a, table).ty, a.span))

@@ -1,0 +1,19 @@
+// emit appelle les gestionnaires tout de suite, dans l'ordre du projet
+event Scored(_points: Int);
+
+total: Int = 0;
+
+on Scored(_points) {
+    total = total + _points;
+    print("+" + _points);
+}
+
+on Scored(_points) {
+    print("total : " + total);
+}
+
+func main(): Void {
+    emit Scored(5);
+    emit Scored(10);
+    print(total);
+}

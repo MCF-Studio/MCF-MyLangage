@@ -1,0 +1,4 @@
+// erreur: MCF0407
+func main(): Void {
+    sleep(-1);
+}

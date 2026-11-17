@@ -1,0 +1,29 @@
+// Structures partagées par référence, énumérations, égalité
+enum Status { Online, Offline }
+
+struct User {
+    name: String;
+    status: Status;
+    tags: Array<String>;
+}
+
+func rename(_user: User, _name: String): Void {
+    _user.name = _name;
+}
+
+func main(): Void {
+    _a: User = User { name: "Alex", status: Status.Online, tags: ["admin"] };
+    rename(_a, "Max");
+    print(_a.name);
+
+    _b: User = _a;
+    _b.status = Status.Offline;
+    print(_a.status);
+    print(_a.status == Status.Offline);
+
+    _c: User = User { tags: ["admin"], status: Status.Offline, name: "Max" };
+    print(_a == _c);
+    _c.tags[0] = "invité";
+    print(_a == _c);
+    print(_c);
+}

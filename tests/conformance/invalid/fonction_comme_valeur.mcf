@@ -1,0 +1,13 @@
+// attendu: MCF0232, MCF0232, MCF0232
+scope Player {
+    func hi(): Void {
+        print("hi");
+    }
+}
+enum Color { Red, Blue }
+
+func main(): Void {
+    print(Player.hi);
+    print(Player);
+    _c: Color = Color;
+}

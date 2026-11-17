@@ -1,0 +1,29 @@
+// DualType : le test `is` se fait sur la valeur réelle
+struct Point {
+    x: Int;
+}
+
+func show(_v: Int, String): Void {
+    if (_v is Int) then {
+        print(_v + 1);
+    }
+    else {
+        print("texte " + _v);
+    }
+}
+
+func describe(_p: Point, Bool): Void {
+    if (_p is Point) then {
+        print(_p.x);
+    }
+    else {
+        print(_p);
+    }
+}
+
+func main(): Void {
+    show(41);
+    show("abc");
+    describe(Point { x: 3 });
+    describe(false);
+}

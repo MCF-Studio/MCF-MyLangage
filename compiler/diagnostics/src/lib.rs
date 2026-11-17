@@ -46,6 +46,7 @@ pub enum Category {
     Ui,
     Config,
     Security,
+    Runtime,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
