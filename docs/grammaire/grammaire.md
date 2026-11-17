@@ -1,7 +1,7 @@
 # Grammaire formelle MCF (implémentée)
 
 Notation EBNF : `{ x }` = zéro ou plus, `[ x ]` = optionnel, `|` = alternative.
-Base : cahier des charges 1.2, §21. Les écarts et compléments sont justifiés dans [DECISIONS.md](../DECISIONS.md).
+Base : cahier des charges 1.2, §21. Grammaire des fichiers `.uimcf` : [interfaces](interfaces.md). Les écarts et compléments sont justifiés dans [DECISIONS.md](../DECISIONS.md).
 
 ```text
 Module          = { Item } ;

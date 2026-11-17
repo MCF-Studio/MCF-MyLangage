@@ -1,0 +1,4 @@
+// attendu: aucun
+event Pret();
+func calcul(): Int { return 1; }
+func vide(): Void { }

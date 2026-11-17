@@ -1,0 +1,4 @@
+// attendu: MCF0713
+ui A {
+    prop n: Int = 0;
+}

@@ -1,0 +1,11 @@
+// attendu: MCF0715, MCF0715, MCF0715
+import calcul;
+import vide;
+ui A {
+    view {
+        Box(onClick: start vide()) {
+            Text("" + await start calcul());
+            Box(visible: (on Pret => vide).isActive());
+        }
+    }
+}

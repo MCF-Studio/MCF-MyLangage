@@ -1,0 +1,11 @@
+// attendu: MCF0708, MCF0708, MCF0708, MCF0708, MCF0708
+style s { padding: 1; }
+style s { padding: 2; }
+ui Box { view { } }
+ui A {
+    prop n: Int = 0;
+    state n: Int = 1;
+    view { }
+    style s { padding: 3; }
+}
+ui A { view { } }

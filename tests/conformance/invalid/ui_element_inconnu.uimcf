@@ -1,0 +1,6 @@
+// attendu: MCF0700, MCF0700
+ui A {
+    view {
+        Boxx { Texte("a"); }
+    }
+}

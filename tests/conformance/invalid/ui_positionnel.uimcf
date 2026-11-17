@@ -1,0 +1,9 @@
+// attendu: MCF0706, MCF0706, MCF0702
+ui A {
+    view {
+        Box("a") {
+            Text("a", "b");
+            Text("a", text: "b");
+        }
+    }
+}

@@ -1,0 +1,65 @@
+// Interface : composants, styles nommés, liaisons
+import clics;
+import ajouter;
+import retirer;
+import titre;
+import recherche;
+import noms;
+import largeur;
+import accent;
+import theme;
+import Theme;
+
+style gros {
+    fontSize: 24;
+    fontWeight: 700;
+}
+
+ui Compteur {
+    prop libelle: String = "Clics";
+    state ouvert: Bool = false;
+
+    view {
+        Box(style: carte) {
+            Text(libelle + " : " + clics, style: gros);
+            Text(titre(clics));
+            Button("+1", onClick: ajouter);
+            Button("Détails", onClick: ouvert = !ouvert);
+            if (ouvert) then {
+                Text("Un clic de plus à chaque appui.", color: #9aa0a6);
+            } else if (clics > 10) then {
+                Text("Beaucoup de clics", color: accent);
+            }
+        }
+    }
+
+    style carte {
+        layout: column;
+        gap: 8;
+        padding: 16;
+        width: largeur;
+        maxWidth: 100%;
+        background: #1e1e2e;
+        radius: 8;
+        opacity: 0.9;
+    }
+}
+
+ui Liste {
+    prop entete: String;
+    state filtre: String = "";
+
+    view {
+        Box(layout: column, align: stretch) {
+            Text(entete, textAlign: center);
+            Input(bind value: filtre, placeholder: "Filtrer", onSubmit: emit Ferme(filtre));
+            Input(bind value: recherche);
+            foreach (_n in noms) do {
+                Box(layout: row, justify: between, onEnter: filtre = _n) {
+                    Text(_n, grow: 1);
+                    Button("Retirer", onClick: retirer(_n));
+                }
+            }
+        }
+    }
+}

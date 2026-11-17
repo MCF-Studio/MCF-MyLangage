@@ -1,0 +1,10 @@
+// attendu: MCF0703, MCF0703, MCF0703, MCF0703, MCF0703, MCF0712, MCF0712, MCF0703
+ui A {
+    view {
+        Box(width: "large", background: 12, layout: ligne, visible: 1) {
+            Text(42);
+            Box(fontWeight: 1000, opacity: 2);
+            Box(color: "rouge");
+        }
+    }
+}

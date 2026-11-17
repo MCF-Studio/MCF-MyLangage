@@ -1,0 +1,4 @@
+// attendu: MCF0714, MCF0714, MCF0714
+ui A { view { A; } }
+ui B { view { Box { C; } } }
+ui C { view { B; } }

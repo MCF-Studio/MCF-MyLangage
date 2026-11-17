@@ -1,0 +1,18 @@
+// attendu: MCF0710, MCF0710, MCF0210, MCF0710, MCF0710, MCF0710, MCF0710
+import total;
+import lire;
+import fixer;
+ui A {
+    prop p: Int = 0;
+    state s: Int = 0;
+    view {
+        Box(onClick: lire) {
+            Box(onClick: total = 2);
+            Box(onClick: fixer);
+            Box(onClick: p = 1);
+            Box(onClick: 3);
+            Box(onClick: #fff);
+            Box(onClick: s);
+        }
+    }
+}

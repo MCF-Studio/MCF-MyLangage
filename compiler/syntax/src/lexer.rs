@@ -12,6 +12,8 @@ pub enum TokenKind {
     Float,
     /// Chaîne, valeur déjà décodée.
     Str(String),
+    /// `#1e1e2e` (fichiers `.uimcf` seulement) : chiffres hexadécimaux, sans `#`.
+    Color(String),
 
     Func,
     Scope,
@@ -83,6 +85,7 @@ impl TokenKind {
             Int => "un entier",
             Float => "un décimal",
             Str(_) => "une chaîne",
+            Color(_) => "une couleur",
             Eof => "la fin du fichier",
             other => return format!("`{}`", other.symbol()),
         };
@@ -145,7 +148,7 @@ impl TokenKind {
             AndAnd => "&&",
             OrOr => "||",
             Bang => "!",
-            Ident | LocalIdent | Int | Float | Str(_) | Eof => "",
+            Ident | LocalIdent | Int | Float | Str(_) | Color(_) | Eof => "",
         }
     }
 }
@@ -203,11 +206,21 @@ pub struct Token {
 }
 
 pub fn lex(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
+    lex_mode(src, false)
+}
+
+/// Lexer des fichiers `.uimcf` : ajoute les couleurs `#rrggbb`.
+pub fn lex_ui(src: &str) -> (Vec<Token>, Vec<Diagnostic>) {
+    lex_mode(src, true)
+}
+
+fn lex_mode(src: &str, ui: bool) -> (Vec<Token>, Vec<Diagnostic>) {
     let mut lexer = Lexer {
         src,
         pos: 0,
         tokens: Vec::new(),
         diags: Vec::new(),
+        ui,
     };
     lexer.run();
     (lexer.tokens, lexer.diags)
@@ -218,6 +231,8 @@ struct Lexer<'a> {
     pos: usize,
     tokens: Vec<Token>,
     diags: Vec<Diagnostic>,
+    /// Fichier `.uimcf`.
+    ui: bool,
 }
 
 fn is_ident_continue(c: char) -> bool {
@@ -329,6 +344,23 @@ impl Lexer<'_> {
                     } else {
                         Gt
                     }
+                }
+                '#' if self.ui => {
+                    self.eat_ident_continue();
+                    let hex = &self.src[start + 1..self.pos];
+                    let valid = matches!(hex.len(), 3 | 4 | 6 | 8)
+                        && hex.chars().all(|c| c.is_ascii_hexdigit());
+                    if !valid {
+                        self.error(
+                            Diagnostic::new(
+                                &codes::INVALID_COLOR_LITERAL,
+                                Span::new(start, self.pos),
+                                format!("couleur `#{hex}` mal formée"),
+                            )
+                            .suggestion("une couleur s'écrit `#rgb`, `#rgba`, `#rrggbb` ou `#rrggbbaa` (chiffres hexadécimaux)"),
+                        );
+                    }
+                    Color(hex.to_string())
                 }
                 '&' if self.eat('&') => AndAnd,
                 '|' if self.eat('|') => OrOr,

@@ -1,0 +1,12 @@
+// attendu: MCF0701, MCF0702, MCF0701, MCF0701
+style s {
+    paddng: 4;
+    color: #fff;
+    color: #000;
+    onClick: f;
+}
+ui A {
+    view {
+        Text("a", colour: #fff);
+    }
+}

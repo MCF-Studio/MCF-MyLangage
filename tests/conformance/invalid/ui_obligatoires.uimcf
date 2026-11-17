@@ -1,0 +1,14 @@
+// attendu: MCF0704, MCF0705, MCF0704
+ui Carte {
+    prop titre: String;
+    view { Text(titre); }
+}
+ui A {
+    view {
+        Box {
+            Button();
+            Text("a") { Box; }
+            Carte();
+        }
+    }
+}

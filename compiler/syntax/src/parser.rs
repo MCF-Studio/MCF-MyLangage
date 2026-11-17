@@ -7,6 +7,9 @@ use crate::ast::*;
 use crate::lexer::{lex, Token, TokenKind};
 use mcf_diagnostics::{codes, Code, Diagnostic, Span};
 
+mod ui;
+pub use ui::{parse_ui, UiParseResult};
+
 pub struct ParseResult {
     pub module: Module,
     pub diagnostics: Vec<Diagnostic>,

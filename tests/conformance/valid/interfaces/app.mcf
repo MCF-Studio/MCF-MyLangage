@@ -1,0 +1,32 @@
+// Logique de l'application : tout ce que l'interface lit ou déclenche.
+enum Theme { Clair, Sombre }
+
+struct Dossier {
+    nom: String;
+    enfants: Array<String>;
+}
+
+clics: Int = 0;
+recherche: String = "";
+noms: Array<String> = ["Ada", "Linus"];
+largeur: Int = 320;
+accent: String = "#ff8800";
+theme: Theme = Theme.Sombre;
+
+event Ferme(_raison: String);
+
+func ajouter(): Void {
+    clics = clics + 1;
+}
+
+func retirer(_nom: String): Void {
+    print(_nom);
+}
+
+func titre(_n: Int): String {
+    return "Clics : " + _n;
+}
+
+func main(): Void {
+    ajouter();
+}

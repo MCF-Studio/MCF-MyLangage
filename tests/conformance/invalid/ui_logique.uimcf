@@ -1,0 +1,10 @@
+// attendu: MCF0715, MCF0715, MCF0715
+func f(): Void { }
+ui A {
+    state n: Int = 0;
+    func g(): Void { }
+    view {
+        n = 1;
+        Text("a");
+    }
+}

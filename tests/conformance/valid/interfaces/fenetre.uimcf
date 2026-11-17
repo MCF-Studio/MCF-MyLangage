@@ -1,0 +1,31 @@
+// Fenêtre principale : utilise les composants d'un autre fichier sans import
+import Dossier;
+import theme;
+import Theme;
+
+ui Principale {
+    view {
+        Window(title: "Démo", width: 800, height: 600) {
+            Compteur(libelle: "Total");
+            Liste(entete: "Personnes");
+            Image("logo.png", alt: "Logo", width: 64, height: 64, x: 8, y: 8);
+            if (theme == Theme.Sombre) then {
+                Box(background: "#000000", visible: true, overflow: hidden);
+            }
+        }
+    }
+}
+
+// Arbre : l'inclusion de soi sous `foreach` est permise.
+ui Arbre {
+    prop dossier: Dossier;
+
+    view {
+        Box(paddingLeft: 12) {
+            Text(dossier.nom);
+            foreach (_e in dossier.enfants) do {
+                Arbre(dossier: Dossier { nom: _e, enfants: [] });
+            }
+        }
+    }
+}

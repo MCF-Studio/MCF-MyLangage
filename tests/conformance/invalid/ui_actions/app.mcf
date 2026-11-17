@@ -1,0 +1,4 @@
+// attendu: aucun
+total: Int = 0;
+func lire(): Int { return total; }
+func fixer(_n: Int): Void { total = _n; }

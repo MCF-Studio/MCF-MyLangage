@@ -9,7 +9,8 @@
 //!
 //! Une entrée est soit un fichier `.mcf` (projet d'un seul fichier), soit un dossier
 //! (projet multi-fichiers ; les en-têtes `// attendu:` de ses fichiers sont concaténés
-//! dans l'ordre alphabétique des fichiers). Les `.cfg` d'un dossier font partie du projet ;
+//! dans l'ordre alphabétique des fichiers). Une entrée peut aussi être un `.uimcf` seul.
+//! Les `.uimcf` et `.cfg` d'un dossier font partie du projet ;
 //! comme ils acceptent les commentaires, ils peuvent aussi porter un en-tête `// attendu:`.
 
 use mcf_semantic::{check_project, Source};
@@ -23,20 +24,23 @@ fn entries(dir: &str) -> Vec<PathBuf> {
     let mut out: Vec<_> = fs::read_dir(&root)
         .unwrap_or_else(|e| panic!("{}: {e}", root.display()))
         .map(|e| e.unwrap().path())
-        .filter(|p| p.is_dir() || p.extension().is_some_and(|x| x == "mcf"))
+        .filter(|p| p.is_dir() || p.extension().is_some_and(|x| x == "mcf" || x == "uimcf"))
         .collect();
     out.sort();
     assert!(!out.is_empty(), "aucune entrée dans {}", root.display());
     out
 }
 
-/// Fichiers `.mcf` et `.cfg` d'une entrée, sous-dossiers compris.
+/// Fichiers `.mcf`, `.uimcf` et `.cfg` d'une entrée, sous-dossiers compris.
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in fs::read_dir(dir).unwrap() {
         let p = e.unwrap().path();
         if p.is_dir() {
             collect(&p, out);
-        } else if p.extension().is_some_and(|x| x == "mcf" || x == "cfg") {
+        } else if p
+            .extension()
+            .is_some_and(|x| x == "mcf" || x == "uimcf" || x == "cfg")
+        {
             out.push(p);
         }
     }

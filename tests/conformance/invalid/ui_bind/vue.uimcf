@@ -1,0 +1,21 @@
+// attendu: MCF0711, MCF0711, MCF0711, MCF0711, MCF0711, MCF0711
+import compte;
+import nom;
+import reglages;
+ui A {
+    prop p: String = "";
+    state n: Int = 0;
+    state s: String = "";
+    view {
+        Box {
+            Input(bind value: nom);
+            Input(bind value: s);
+            Input(bind value: compte);
+            Input(bind value: n);
+            Input(bind value: p);
+            Input(bind value: reglages);
+            Input(bind placeholder: s);
+            Text(bind text: s);
+        }
+    }
+}

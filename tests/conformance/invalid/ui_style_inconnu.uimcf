@@ -1,0 +1,7 @@
+// attendu: MCF0707, MCF0703
+style carte { padding: 4; }
+ui A {
+    view {
+        Box(style: crate) { Box(style: 3); }
+    }
+}

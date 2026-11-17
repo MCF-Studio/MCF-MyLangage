@@ -1,0 +1,12 @@
+// attendu: MCF0709, MCF0709
+ui A {
+    view {
+        Box { Window; }
+    }
+}
+ui B {
+    view {
+        Window;
+        Box;
+    }
+}

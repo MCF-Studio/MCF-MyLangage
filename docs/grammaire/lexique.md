@@ -34,7 +34,7 @@ Interdits comme identifiants (`MCF0008`) pour pouvoir les introduire plus tard s
 
 `action async const interface let match null secret set switch`
 
-`ui`, `state`, `view` et `style` ne sont **pas** réservés en `.mcf` (identifiants trop courants) : ce seront des mots-clés contextuels des fichiers `.uimcf`.
+`ui`, `prop`, `state`, `view`, `style` et `bind` ne sont **pas** réservés en `.mcf` (identifiants trop courants) : ce sont des mots contextuels des fichiers `.uimcf`, où s'ajoutent aussi les couleurs `#rrggbb` (MCF0009). Voir [interfaces](interfaces.md).
 
 `set` et `action` (édition 1.0) reçoivent une suggestion de migration ; `set` est ignoré après le diagnostic pour que la déclaration qui suit soit analysée normalement.
 

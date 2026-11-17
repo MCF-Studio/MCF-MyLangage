@@ -20,6 +20,7 @@ use mcf_diagnostics::{codes, Diagnostic, Span};
 use mcf_syntax::ast::*;
 
 pub mod types;
+mod ui;
 pub use types::Ty;
 
 /// Types natifs connus (cahier des charges 1.2, §5 ; `Bytes` vient de §11.1).
@@ -44,22 +45,59 @@ pub fn is_config_file(name: &str) -> bool {
     name.ends_with(".cfg")
 }
 
+impl Source {
+    /// Interface (`.uimcf`) plutôt que code MCF.
+    pub fn is_ui(&self) -> bool {
+        is_ui_file(&self.name)
+    }
+}
+
+pub fn is_ui_file(name: &str) -> bool {
+    name.ends_with(".uimcf")
+}
+
 /// Analyse complète d'un projet : syntaxe puis sémantique des fichiers `.mcf`, puis lecture et
 /// validation des fichiers `.cfg` par les types qui les utilisent (`config`, `loadConfig`).
 /// Retourne les diagnostics de chaque fichier, dans l'ordre des sources, triés par position.
 pub fn check_project(sources: &[Source]) -> Vec<Vec<Diagnostic>> {
     let mcf: Vec<usize> = (0..sources.len())
-        .filter(|&i| !sources[i].is_config())
+        .filter(|&i| !sources[i].is_config() && !sources[i].is_ui())
         .collect();
+    let ui: Vec<usize> = (0..sources.len()).filter(|&i| sources[i].is_ui()).collect();
     let parsed: Vec<_> = mcf
         .iter()
         .map(|&i| mcf_syntax::parse(&sources[i].text))
         .collect();
-    let modules: Vec<&Module> = parsed.iter().map(|p| &p.module).collect();
-    let (mut semantic, uses) = analyze_with_configs(&modules);
+    let parsed_ui: Vec<_> = ui
+        .iter()
+        .map(|&i| mcf_syntax::parse_ui(&sources[i].text))
+        .collect();
+    // Chaque `.uimcf` est aussi un module pour l'analyseur : ses imports sont résolus comme
+    // ceux d'un `.mcf`, ce qui rend le programme visible dans ses expressions.
+    let ui_imports: Vec<Module> = parsed_ui
+        .iter()
+        .map(|p| Module {
+            items: p.module.imports.iter().cloned().map(Item::Import).collect(),
+        })
+        .collect();
+    let modules: Vec<&Module> = parsed
+        .iter()
+        .map(|p| &p.module)
+        .chain(ui_imports.iter())
+        .collect();
+    let ui_files: Vec<(usize, &UiModule)> = parsed_ui
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| !p.diagnostics.iter().any(|d| d.is_error()))
+        .map(|(k, p)| (mcf.len() + k, &p.module))
+        .collect();
+    let (mut semantic, uses) = analyze_project(&modules, &ui_files);
     let mut out: Vec<Vec<Diagnostic>> = vec![Vec::new(); sources.len()];
-    for ((p, sem), &i) in parsed.into_iter().zip(semantic.iter_mut()).zip(&mcf) {
-        let mut diags = p.diagnostics;
+    let syntax = parsed
+        .into_iter()
+        .map(|p| p.diagnostics)
+        .chain(parsed_ui.into_iter().map(|p| p.diagnostics));
+    for ((mut diags, sem), &i) in syntax.zip(semantic.iter_mut()).zip(mcf.iter().chain(&ui)) {
         // Un fichier syntaxiquement invalide produirait des erreurs sémantiques en cascade.
         if !diags.iter().any(|d| d.is_error()) {
             diags.append(sem);
@@ -274,10 +312,15 @@ impl Typed {
 type Narrowings = Vec<(String, Ty)>;
 
 pub fn analyze(modules: &[&Module]) -> Vec<Vec<Diagnostic>> {
-    analyze_with_configs(modules).0
+    analyze_project(modules, &[]).0
 }
 
-fn analyze_with_configs(modules: &[&Module]) -> (Vec<Vec<Diagnostic>>, Vec<ConfigUse>) {
+/// `ui_files` : (indice dans `modules`, contenu) des `.uimcf` à vérifier ; leur module dans
+/// `modules` ne contient que leurs imports.
+fn analyze_project(
+    modules: &[&Module],
+    ui_files: &[(usize, &UiModule)],
+) -> (Vec<Vec<Diagnostic>>, Vec<ConfigUse>) {
     let mut a = Analyzer {
         configs: HashSet::new(),
         config_uses: Vec::new(),
@@ -318,6 +361,7 @@ fn analyze_with_configs(modules: &[&Module]) -> (Vec<Vec<Diagnostic>>, Vec<Confi
         a.file = file;
         a.check_items(&module.items, a.roots[file]);
     }
+    a.check_ui(ui_files);
     a.advise_loops_in_tasks();
     (a.diags, a.config_uses)
 }

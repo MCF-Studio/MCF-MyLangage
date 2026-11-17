@@ -90,10 +90,7 @@ pub fn normalize_name(name: &str) -> String {
 }
 
 /// Nom le plus proche dans `candidates` (distance d'édition ≤ 2, ou même nom sans la casse).
-pub(crate) fn closest<'a>(
-    name: &str,
-    candidates: impl Iterator<Item = &'a str>,
-) -> Option<&'a str> {
+pub fn closest<'a>(name: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
     let mut best: Option<(usize, &str)> = None;
     for c in candidates {
         let d = if c.eq_ignore_ascii_case(name) {

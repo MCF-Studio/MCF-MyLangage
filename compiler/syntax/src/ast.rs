@@ -362,3 +362,136 @@ impl Expr {
         }
     }
 }
+
+// ------------------------------------------------------------------ interfaces `.uimcf`
+// Règles : `docs/grammaire/interfaces.md` (phase 10).
+
+/// Fichier `.uimcf` : imports, styles partagés par le fichier et composants.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UiModule {
+    pub imports: Vec<ImportDecl>,
+    pub styles: Vec<StyleDecl>,
+    pub components: Vec<UiDecl>,
+}
+
+/// `ui Nom { prop …; state …; view { … } style … { … } }`
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UiDecl {
+    pub name: Ident,
+    pub members: Vec<UiMember>,
+    /// `None` si `view` est absent (signalé par l'analyse).
+    pub view: Option<Vec<ViewNode>>,
+    pub styles: Vec<StyleDecl>,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum UiMemberKind {
+    /// Reçu de celui qui utilise le composant.
+    Prop,
+    /// État propre au composant.
+    State,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UiMember {
+    pub kind: UiMemberKind,
+    pub name: Ident,
+    pub ty: TypeDecl,
+    pub init: Option<Expr>,
+    pub span: Span,
+}
+
+/// `style nom { propriété: valeur; … }`
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct StyleDecl {
+    pub name: Ident,
+    pub props: Vec<UiProp>,
+    pub span: Span,
+}
+
+/// `nom: valeur` (élément ou style), `bind nom: cible` (élément).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UiProp {
+    pub bind: bool,
+    pub name: Ident,
+    pub value: UiValue,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind")]
+pub enum UiValue {
+    Expr(Expr),
+    /// `50%`
+    Percent {
+        value: f64,
+        span: Span,
+    },
+    /// `#1e1e2e` (texte sans `#`).
+    Color {
+        hex: String,
+        span: Span,
+    },
+    /// `emit Evenement(args)` dans un gestionnaire.
+    Emit {
+        event: Path,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    /// `etat = valeur` dans un gestionnaire.
+    Assign {
+        target: Expr,
+        value: Expr,
+        span: Span,
+    },
+}
+
+impl UiValue {
+    pub fn span(&self) -> Span {
+        match self {
+            UiValue::Expr(e) => e.span,
+            UiValue::Percent { span, .. }
+            | UiValue::Color { span, .. }
+            | UiValue::Emit { span, .. }
+            | UiValue::Assign { span, .. } => *span,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind")]
+pub enum ViewNode {
+    Element(Element),
+    If(UiIf),
+    Foreach(UiForeach),
+}
+
+/// `Nom(args) { enfants }` ou `Nom(args);`
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Element {
+    pub name: Ident,
+    /// Valeur sans nom (propriété principale), en premier.
+    pub positional: Vec<Expr>,
+    pub props: Vec<UiProp>,
+    /// `None` : élément terminé par `;`.
+    pub children: Option<Vec<ViewNode>>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UiIf {
+    pub cond: Expr,
+    pub then_nodes: Vec<ViewNode>,
+    pub else_nodes: Option<Vec<ViewNode>>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UiForeach {
+    pub binding: Ident,
+    pub ty: Option<TypeDecl>,
+    pub iter: Expr,
+    pub body: Vec<ViewNode>,
+    pub span: Span,
+}

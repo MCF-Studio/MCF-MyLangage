@@ -1,0 +1,8 @@
+// attendu: MCF0206, MCF0220, MCF0200
+import inconnu;
+ui A {
+    state n: Int = "a";
+    view {
+        Text("" + cache);
+    }
+}

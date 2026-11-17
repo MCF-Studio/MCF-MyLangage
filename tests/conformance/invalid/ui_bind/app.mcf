@@ -1,0 +1,5 @@
+// attendu: aucun
+struct Reglages { nom: String; }
+config reglages: Reglages = "reglages.cfg";
+compte: Int = 0;
+nom: String = "";

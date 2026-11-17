@@ -41,6 +41,7 @@ codes! {
     INVALID_NUMBER_LITERAL = "MCF0006", Lexical, Error, "Littéral numérique mal formé.";
     NEWLINE_IN_STRING = "MCF0007", Lexical, Error, "Retour à la ligne dans une chaîne (utiliser \\n).";
     RESERVED_KEYWORD = "MCF0008", Lexical, Error, "Mot réservé utilisé comme identifiant.";
+    INVALID_COLOR_LITERAL = "MCF0009", Lexical, Error, "Couleur mal formée (`.uimcf`) : `#rgb`, `#rgba`, `#rrggbb` ou `#rrggbbaa`.";
 
     UNEXPECTED_TOKEN = "MCF0100", Syntax, Error, "Token inattendu à cet endroit.";
     MISSING_SEMICOLON = "MCF0101", Syntax, Error, "Instruction non terminée par `;`.";
@@ -140,4 +141,21 @@ codes! {
     CONFIG_UNKNOWN_KEY = "MCF0622", Config, Error, "Clé du `.cfg` qui ne correspond à aucun champ.";
     CONFIG_UNKNOWN_VARIANT = "MCF0623", Config, Error, "Chaîne qui ne nomme aucune variante de l'énumération.";
     CONFIG_NUMBER_OUT_OF_RANGE = "MCF0624", Config, Error, "Nombre hors de la plage de `Int` ou de `Float`.";
+
+    UI_UNKNOWN_ELEMENT = "MCF0700", Ui, Error, "Élément qui n'est ni un élément de base ni un composant `ui` du projet.";
+    UI_UNKNOWN_PROPERTY = "MCF0701", Ui, Error, "Propriété inconnue pour cet élément ou ce style.";
+    UI_DUPLICATE_PROPERTY = "MCF0702", Ui, Error, "Propriété donnée deux fois au même élément ou style.";
+    UI_WRONG_VALUE = "MCF0703", Ui, Error, "Valeur qui ne convient pas à cette propriété.";
+    UI_MISSING_PROPERTY = "MCF0704", Ui, Error, "Propriété obligatoire absente.";
+    UI_CHILDREN_NOT_ALLOWED = "MCF0705", Ui, Error, "Cet élément ne peut pas contenir d'enfants.";
+    UI_POSITIONAL_ARGUMENT = "MCF0706", Ui, Error, "Valeur sans nom refusée : seule la propriété principale, en premier, peut s'écrire sans nom.";
+    UI_UNKNOWN_STYLE = "MCF0707", Ui, Error, "Style nommé introuvable.";
+    UI_NAME_CONFLICT = "MCF0708", Ui, Error, "Nom de composant, de style ou de membre déjà utilisé.";
+    UI_WINDOW_NOT_ROOT = "MCF0709", Ui, Error, "`Window` doit être le seul élément racine d'une `view`.";
+    UI_INVALID_ACTION = "MCF0710", Ui, Error, "Action d'événement invalide : appel sans résultat, `emit` ou affectation d'un `state`.";
+    UI_INVALID_BIND = "MCF0711", Ui, Error, "`bind` invalide : propriété non liable, ou cible qui n'est pas un `state` ou une globale modifiable du bon type.";
+    UI_VALUE_OUT_OF_RANGE = "MCF0712", Ui, Error, "Valeur de style hors de sa plage.";
+    UI_MISSING_VIEW = "MCF0713", Ui, Error, "Composant `ui` sans `view`.";
+    UI_RECURSIVE_COMPONENT = "MCF0714", Ui, Error, "Composant qui s'inclut lui-même sans condition : il ne s'afficherait jamais.";
+    UI_LOGIC_NOT_ALLOWED = "MCF0715", Ui, Error, "Logique dans un `.uimcf` : elle s'écrit dans un fichier `.mcf`.";
 }

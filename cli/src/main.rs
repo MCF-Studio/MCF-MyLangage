@@ -14,7 +14,7 @@ MCF – MyLangage
 
 Usage :
   mcf check <fichier|dossier> [--format text|json] [--strict] [--no-hints]
-             (vérifie les .mcf et les fichiers de configuration .cfg)
+             (vérifie les .mcf, les interfaces .uimcf et les configurations .cfg)
   mcf run <fichier|dossier> [--strict] [--no-hints]
   mcf describe errors|keywords [--format text|json]
   mcf version
@@ -100,12 +100,13 @@ fn main() -> ExitCode {
     }
 }
 
-/// Fichiers d'un projet : `.mcf` et `.cfg` du dossier et de ses sous-dossiers. Pour un fichier
-/// seul, le projet est ce fichier plus les `.cfg` de son dossier (qu'il peut lire avec `config`).
+/// Fichiers d'un projet : `.mcf`, `.uimcf` et `.cfg` du dossier et de ses sous-dossiers. Pour un
+/// fichier seul, le projet est ce fichier plus les `.cfg` de son dossier (qu'il peut lire avec
+/// `config`) ; pour vérifier une interface avec le code qu'elle importe, passer le dossier.
 fn collect_sources(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if path.is_file() {
         out.push(path.to_path_buf());
-        if path.extension().is_some_and(|e| e == "mcf") {
+        if path.extension().is_some_and(|e| e == "mcf" || e == "uimcf") {
             let dir = match path.parent() {
                 Some(d) if !d.as_os_str().is_empty() => d,
                 _ => Path::new("."),
@@ -114,7 +115,7 @@ fn collect_sources(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
         }
         return Ok(());
     }
-    collect_dir(path, out, &["mcf", "cfg"])
+    collect_dir(path, out, &["mcf", "uimcf", "cfg"])
 }
 
 fn collect_dir(path: &Path, out: &mut Vec<PathBuf>, extensions: &[&str]) -> std::io::Result<()> {
@@ -136,7 +137,7 @@ fn collect_dir(path: &Path, out: &mut Vec<PathBuf>, extensions: &[&str]) -> std:
     Ok(())
 }
 
-/// Lit les fichiers `.mcf` et `.cfg` du chemin, triés par nom. Tout le dossier forme un seul projet :
+/// Lit les fichiers `.mcf`, `.uimcf` et `.cfg` du chemin, triés par nom. Tout le dossier forme un seul projet :
 /// les imports sont résolus entre ses fichiers.
 fn load_sources(command: &str, opts: &Options) -> Result<Vec<Source>, ExitCode> {
     let [target] = opts.positional.as_slice() else {
@@ -264,7 +265,8 @@ fn run(opts: &Options) -> ExitCode {
     let (code_files, code_sources): (Vec<SourceFile>, Vec<&Source>) = files
         .into_iter()
         .zip(&sources)
-        .filter(|(_, s)| !s.is_config())
+        // Les interfaces `.uimcf` s'afficheront avec le backend web (phase 11).
+        .filter(|(_, s)| !s.is_config() && !s.is_ui())
         .unzip();
     let files = code_files;
     let parsed: Vec<_> = code_sources
