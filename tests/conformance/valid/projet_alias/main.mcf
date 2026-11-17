@@ -1,0 +1,17 @@
+// Alias d'import (§8.2, D40) : deux `name` côte à côte, scope et type renommés.
+import Player.name as playerName;
+import Vehicle.name as vehicleName;
+import Shop as S;
+import Shop.Item as Article;
+
+func label(_item: Article): String {
+    return _item.name + " (" + S.count + ")";
+}
+
+func show(): Void {
+    print(playerName + " / " + vehicleName);
+    _sword: Article = Article { name: "Épée", price: 12.5 };
+    _shield: S.Item = S.Item { name: "Bouclier", price: 8.0 };
+    print(label(_sword) + label(_shield));
+    playerName = "Max";
+}

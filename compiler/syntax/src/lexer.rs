@@ -18,6 +18,7 @@ pub enum TokenKind {
     Struct,
     Enum,
     Import,
+    As,
     Event,
     On,
     Emit,
@@ -90,6 +91,7 @@ impl TokenKind {
             Enum => "enum",
             Scope => "scope",
             Import => "import",
+            As => "as",
             Event => "event",
             On => "on",
             Emit => "emit",
@@ -144,6 +146,7 @@ pub const KEYWORDS: &[(&str, TokenKind)] = &[
     ("enum", TokenKind::Enum),
     ("scope", TokenKind::Scope),
     ("import", TokenKind::Import),
+    ("as", TokenKind::As),
     ("event", TokenKind::Event),
     ("on", TokenKind::On),
     ("emit", TokenKind::Emit),
@@ -169,7 +172,6 @@ pub const KEYWORDS: &[(&str, TokenKind)] = &[
 /// `ui`, `state`, `view`, `style` ne sont PAS réservés : ce seront des mots contextuels des fichiers `.uimcf`.
 pub const RESERVED: &[&str] = &[
     "action",
-    "as",
     "async",
     "await",
     "config",
@@ -596,6 +598,10 @@ mod tests {
         assert_eq!(
             kinds("a == b != c"),
             vec![Ident, EqEq, Ident, NotEq, Ident, Eof]
+        );
+        assert_eq!(
+            kinds("import A.b as c;"),
+            vec![Import, Ident, Dot, Ident, As, Ident, Semi, Eof]
         );
     }
 

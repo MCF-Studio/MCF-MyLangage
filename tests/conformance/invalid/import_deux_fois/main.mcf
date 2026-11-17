@@ -1,0 +1,3 @@
+// attendu: MCF0208
+import Player;
+import Player as P;

@@ -1,0 +1,3 @@
+scope Vehicle {
+    name: String = "Comet";
+}

@@ -1,0 +1,10 @@
+scope Shop {
+    struct Item {
+        name: String;
+        price: Float;
+    }
+
+    func describe(_item: Item): String {
+        return _item.name + " : " + _item.price;
+    }
+}

@@ -172,8 +172,7 @@ impl<'a> Program<'a> {
             for item in &module.items {
                 if let Item::Import(imp) = item {
                     if let Some(found) = p.find_exported(&imp.path.segments, file) {
-                        let last = &imp.path.segments[imp.path.segments.len() - 1];
-                        p.imports[file].insert(last.name.clone(), found);
+                        p.imports[file].insert(imp.local_name().name.clone(), found);
                     }
                 }
             }

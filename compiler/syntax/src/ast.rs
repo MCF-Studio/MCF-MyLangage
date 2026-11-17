@@ -122,7 +122,18 @@ pub struct FieldInit {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ImportDecl {
     pub path: Path,
+    /// `import Player.name as playerName;` : seul l'alias est visible dans le fichier.
+    pub alias: Option<Ident>,
     pub span: Span,
+}
+
+impl ImportDecl {
+    /// Nom sous lequel l'élément importé est visible : l'alias, sinon le dernier segment.
+    pub fn local_name(&self) -> &Ident {
+        self.alias
+            .as_ref()
+            .unwrap_or_else(|| &self.path.segments[self.path.segments.len() - 1])
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

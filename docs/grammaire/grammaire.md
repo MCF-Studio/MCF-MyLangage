@@ -20,7 +20,7 @@ Params          = Param { "," Param } ;
 Param           = LocalIdent ":" TypeDecl ;
 
 ScopeDecl       = "scope" Ident "{" { Item } "}" ;
-ImportDecl      = "import" Path ";" ;
+ImportDecl      = "import" Path [ "as" Ident ] ";" ;
 StructDecl      = "struct" Ident "{" { Ident ":" TypeDecl ";" | FuncDecl } "}" ;
 EnumDecl        = "enum" Ident "{" [ Ident { "," Ident } [ "," ] ] "}" ;
 EventDecl       = "event" Path "(" [ Params ] ")" ";" ;

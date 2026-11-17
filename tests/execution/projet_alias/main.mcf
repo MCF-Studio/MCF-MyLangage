@@ -1,0 +1,12 @@
+import Player.name as playerName;
+import Vehicle.name as vehicleName;
+import Shop.Item as Article;
+import Shop.describe as describe;
+
+func main(): Void {
+    print(playerName + " conduit " + vehicleName);
+    playerName = "Max";
+    print(playerName);
+    _item: Article = Article { name: "Épée", price: 12.5 };
+    print(describe(_item));
+}

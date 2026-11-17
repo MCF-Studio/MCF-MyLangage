@@ -10,7 +10,7 @@ Ordre tiré du cahier des charges 1.2 (§22). Une phase n'est terminée que lors
 | 4 | DualType, type narrowing, analyse sémantique | ✅ vérification des types, narrowing sûr |
 | 5 | Fonctions et structures | ✅ structures (avec méthodes), énumérations |
 | 6 | Conditions et boucles (exécution) | ✅ interpréteur, `mcf run`, point d'entrée `main` |
-| 7 | Imports et résolution des symboles | 🟡 imports de base faits (alias à venir) |
+| 7 | Imports et résolution des symboles | ✅ imports entre fichiers, alias (`as`) |
 | 8 | Événements et asynchrone | ⬜ |
 | 9 | Configuration `.cfg` | ⬜ |
 | 10 | Interfaces `.uimcf` | ⬜ |

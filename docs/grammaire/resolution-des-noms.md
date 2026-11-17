@@ -42,7 +42,7 @@ func main(): Void {
 | Événement non déclaré (`on` / `emit`) | MCF0205 |
 | Import introuvable | MCF0206 |
 | `Scope.membre` inexistant | MCF0207 |
-| Import ambigu ou en collision | MCF0208 |
+| Import ambigu, en collision, ou même élément importé deux fois | MCF0208 |
 | Nombre de données d'événement incorrect | MCF0209 |
 | Nombre d'arguments incorrect | MCF0210 |
 | `break` / `continue` hors boucle | MCF0211 |
@@ -52,6 +52,28 @@ func main(): Void {
 - Une locale n'est visible qu'**après** sa déclaration : `_x: Int = _x + 1;` est refusé.
 - Une locale déclarée dans un `if` ou une boucle n'existe plus après le bloc.
 - `import Player;` rend `Player` utilisable (`Player.name`) ; `import Player.name;` rend `name` utilisable directement.
+
+## Alias d'import
+
+`as` donne un autre nom à l'élément importé, pour résoudre une collision (§8.2) :
+
+```mcf
+import Player.name as playerName;
+import Vehicle.name as vehicleName;
+import Shop as S;
+import Shop.Item as Article;
+
+func show(): Void {
+    _item: Article = Article { name: "Épée", price: 12.5 };
+    print(playerName + " / " + vehicleName + " / " + S.count);
+}
+```
+
+- Seul l'alias est visible dans le fichier : après `import Player as P;`, `Player.name` → MCF0200 (la suggestion rappelle l'alias).
+- L'alias suit les règles d'un nom de racine : sans `_` (MCF0103), distinct des déclarations et des autres imports du fichier (MCF0208), jamais `main` (MCF0250, réservé au point d'entrée).
+- Un même élément ne s'importe qu'une fois par fichier, avec ou sans alias (MCF0208).
+- Un alias vaut pour tout ce que l'élément désigne : variable (lecture et affectation), fonction, scope, structure, énumération, y compris dans les annotations de type.
+- L'alias est local au fichier qui l'écrit ; les autres fichiers ne le voient pas.
 
 ## Types natifs reconnus
 

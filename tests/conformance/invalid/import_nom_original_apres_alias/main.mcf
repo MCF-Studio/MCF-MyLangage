@@ -1,0 +1,7 @@
+// attendu: MCF0200
+import Player as P;
+
+func show(): Void {
+    print(P.name);
+    print(Player.name);
+}

@@ -571,45 +571,82 @@ impl Analyzer {
         for item in items {
             let Item::Import(imp) = item else { continue };
             let full = path_text(&imp.path);
-            let last = &imp.path.segments[imp.path.segments.len() - 1];
+            let local = imp.local_name();
             let mut found = self.find_exported(&imp.path.segments);
-            match found.len() {
-                0 => self.report(
+            if found.len() > 1 {
+                let n = found.len();
+                self.report(
+                    Diagnostic::new(
+                        &codes::IMPORT_CONFLICT,
+                        imp.path.span,
+                        format!("`{full}` est déclaré dans {n} fichiers : import ambigu"),
+                    )
+                    .suggestion(
+                        "renommer l'une des déclarations ou importer un chemin plus précis",
+                    ),
+                );
+                continue;
+            }
+            let Some(target) = found.pop() else {
+                self.report(
                     Diagnostic::new(
                         &codes::UNRESOLVED_IMPORT,
                         imp.path.span,
                         format!("`{full}` n'existe dans aucun autre fichier du projet"),
                     )
                     .suggestion("vérifier l'orthographe, ou que le fichier qui le déclare fait partie du projet vérifié"),
-                ),
-                1 => {
-                    if self.tables[root].names.contains_key(&last.name)
-                        || self.imports[self.file].contains_key(&last.name)
-                    {
-                        self.report(
-                            Diagnostic::new(
-                                &codes::IMPORT_CONFLICT,
-                                imp.path.span,
-                                format!("`{}` est déjà déclaré ou importé dans ce fichier", last.name),
-                            )
-                            .suggestion(format!(
-                                "supprimer cet import et utiliser l'accès qualifié, ex. `import {};` puis `{full}`",
-                                imp.path.segments[0].name
-                            )),
-                        );
-                    } else {
-                        self.imports[self.file].insert(last.name.clone(), found.remove(0));
-                    }
-                }
-                n => self.report(
+                );
+                continue;
+            };
+            // Un même élément sous deux noms rendrait le fichier plus difficile à lire.
+            if let Some(other) = self.imports[self.file]
+                .iter()
+                .find(|(_, t)| **t == target)
+                .map(|(name, _)| name.clone())
+            {
+                self.report(
                     Diagnostic::new(
                         &codes::IMPORT_CONFLICT,
-                        imp.path.span,
-                        format!("`{full}` est déclaré dans {n} fichiers : import ambigu"),
+                        imp.span,
+                        format!("`{full}` est déjà importé dans ce fichier sous le nom `{other}`"),
                     )
-                    .suggestion("renommer l'une des déclarations ou importer un chemin plus précis"),
-                ),
+                    .suggestion("supprimer cet import"),
+                );
+                continue;
             }
+            if local.name == "main" {
+                self.report(
+                    Diagnostic::new(
+                        &codes::INVALID_ENTRY_POINT,
+                        local.span,
+                        "`main` est réservé au point d'entrée : un import ne peut pas porter ce nom",
+                    )
+                    .suggestion(format!("importer sous un autre nom : `import {full} as autreNom;`")),
+                );
+                continue;
+            }
+            if self.tables[root].names.contains_key(&local.name)
+                || self.imports[self.file].contains_key(&local.name)
+            {
+                let what = if imp.alias.is_some() {
+                    "l'alias"
+                } else {
+                    "le nom"
+                };
+                self.report(
+                    Diagnostic::new(
+                        &codes::IMPORT_CONFLICT,
+                        local.span,
+                        format!("{what} `{}` est déjà déclaré ou importé dans ce fichier", local.name),
+                    )
+                    .suggestion(format!(
+                        "importer sous un autre nom (`import {full} as autreNom;`) ou utiliser l'accès qualifié (`import {};` puis `{full}`)",
+                        imp.path.segments[0].name
+                    )),
+                );
+                continue;
+            }
+            self.imports[self.file].insert(local.name.clone(), target);
         }
     }
 
@@ -1204,7 +1241,19 @@ impl Analyzer {
             .iter()
             .enumerate()
             .any(|(f, &r)| f != self.file && self.tables[r].names.contains_key(&ident.name));
-        if elsewhere {
+        let mut aliases: Vec<_> = self.imports[self.file]
+            .iter()
+            .filter(|(alias, (_, original))| *original == ident.name && **alias != ident.name)
+            .map(|(alias, _)| format!("`{alias}`"))
+            .collect();
+        aliases.sort();
+        if !aliases.is_empty() {
+            d = d.suggestion(format!(
+                "`{}` est importé dans ce fichier sous le nom {}",
+                ident.name,
+                aliases.join(" ou ")
+            ));
+        } else if elsewhere {
             d = d.suggestion(format!(
                 "`{0}` existe dans un autre fichier : ajouter `import {0};`",
                 ident.name

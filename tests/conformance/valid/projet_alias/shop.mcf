@@ -1,0 +1,8 @@
+scope Shop {
+    count: Int = 3;
+
+    struct Item {
+        name: String;
+        price: Float;
+    }
+}

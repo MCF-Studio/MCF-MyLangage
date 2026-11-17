@@ -461,10 +461,29 @@ impl Parser<'_> {
     fn import(&mut self) -> Option<ImportDecl> {
         let start = self.bump().span;
         let path = self.path()?;
+        let mut alias = None;
+        if self.at(&K::As) {
+            self.bump();
+            if self.at(&K::LocalIdent) {
+                let span = self.span();
+                let name = self.text(span).to_string();
+                self.diags.push(
+                    Diagnostic::new(
+                        &codes::LOCAL_DECLARATION_AT_MODULE_LEVEL,
+                        span,
+                        format!("l'alias `{name}` est visible dans tout le fichier : pas de préfixe `_`"),
+                    )
+                    .suggestion(format!("écrire `as {}`", name.trim_start_matches('_'))),
+                );
+            }
+            alias = Some(self.ident()?);
+        }
+        let end = alias.as_ref().map_or(path.span, |a| a.span);
         self.expect_semi();
         Some(ImportDecl {
-            span: start.to(path.span),
+            span: start.to(end),
             path,
+            alias,
         })
     }
 

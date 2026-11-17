@@ -1,0 +1,4 @@
+// attendu: MCF0208
+import Player.name as label;
+
+label: String = "titre";
