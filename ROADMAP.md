@@ -14,7 +14,7 @@ Ordre tiré du cahier des charges 1.2 (§22). Une phase n'est terminée que lors
 | 8 | Événements et asynchrone | ✅ tâches (`start`/`await`), `start emit`, abonnements (`on X => f`), métadonnées |
 | 9 | Configuration `.cfg` | ✅ `config`, `loadConfig`, validation par les types, lecture confinée au projet |
 | 10 | Interfaces `.uimcf` | ✅ syntaxe, composants, styles, liaisons, vérification (`mcf check`) ; affichage en phase 11 |
-| 11 | Backend web | 📝 spec : [docs/cibles/web.md](docs/cibles/web.md), D58–D65 à valider |
+| 11 | Affichage des `.uimcf` : **d'abord MCF Engine (Bevy)**, puis web (D66) | 🟡 en cours : D58–D65 validées ; prochaine étape = API bibliothèque + liste de changements de vue indépendante de l'affichage ; licence D67 à trancher avant le pont Bevy ; spec web : [docs/cibles/web.md](docs/cibles/web.md) |
 | 12 | Runtime, backend natif, **module `Secure` et chiffrement réseau** | ⬜ |
 | 13 | Language Server et outils IA | ⬜ |
 | 14 | IDE unifié (Tauri 2 + Vue 3) | ⬜ |

@@ -1,6 +1,6 @@
 # Cible web (phase 11) — spécification
 
-**Statut :** spécification à valider (D58 à D65 proposées). Rien n'est encore implémenté.
+**Statut :** spécification validée (D58 à D65). Rien n'est encore implémenté : la cible Bevy (MCF Engine) passe en premier (D66), la couche d'affichage décrite ici est partagée entre les deux cibles.
 
 Cahier des charges 1.2 : §15 (export web autonome, distribuable sans l'IDE), §13 (affichage des `.uimcf`), §26 (rien ne transite en clair, aucune donnée vers MCF Studio). La phase 11 tient aussi l'engagement de D56 : **une fonction qui a des effets de bord est refusée dans une vue**.
 
