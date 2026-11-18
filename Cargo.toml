@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["compiler/diagnostics", "compiler/syntax", "compiler/config", "compiler/semantic", "compiler/runtime", "cli"]
+members = ["compiler/diagnostics", "compiler/syntax", "compiler/config", "compiler/semantic", "compiler/runtime", "compiler/view", "cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,6 +19,7 @@ mcf-syntax = { path = "compiler/syntax" }
 mcf-config = { path = "compiler/config" }
 mcf-semantic = { path = "compiler/semantic" }
 mcf-runtime = { path = "compiler/runtime" }
+mcf-view = { path = "compiler/view" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
