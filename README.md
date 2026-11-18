@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml/badge.svg)](https://github.com/MCF-Studio/MCF-MyLangage/actions/workflows/ci.yml)
 ![Statut](https://img.shields.io/badge/statut-phase%208%20%C2%B7%20t%C3%A2ches-orange)
-[![Licence](https://img.shields.io/badge/licence-GPL--3.0-blue)](LICENSE)
+[![Licence](https://img.shields.io/badge/licence-MIT%2FApache--2.0%20%2B%20GPL--3.0%20(cli)-blue)](LICENSE)
 ![Rust](https://img.shields.io/badge/compilateur-Rust-b7410e)
 ![Contributions](https://img.shields.io/badge/contributions-bienvenues-brightgreen)
 
@@ -136,7 +136,13 @@ docs                   spécifications
 
 ## Licence
 
-MCF est publié sous **[GNU GPL v3](LICENSE)** (GPL-3.0-only) — © MCF Studio.
+Depuis la décision D67, MCF est publié sous deux régimes — © MCF Studio :
+- les **bibliothèques** (`compiler/` : syntaxe, vérification, exécution, vue) sous **[MIT](LICENSE-MIT) ou [Apache-2.0](LICENSE-APACHE)**, au choix : tu peux les intégrer dans un produit, y compris fermé (c'est ce que fait MCF Engine) ;
+- la **ligne de commande `mcf`** (`cli/`) sous **[GNU GPL v3](LICENSE)** (GPL-3.0-only).
+
+Les versions déjà publiées avant ce changement restent disponibles sous leur ancienne licence (GPL-3.0-only).
+
+Pour la ligne de commande, en clair :
 
 En clair :
 - ✅ tu peux utiliser MCF, l'étudier, le partager ;

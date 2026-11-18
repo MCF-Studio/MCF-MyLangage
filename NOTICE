@@ -1,6 +1,13 @@
 MCF – MyLangage
 Copyright (C) 2026 MCF Studio
 
+Licences (décision D67) :
+- les bibliothèques du dossier `compiler/` (diagnostics, config, syntax, semantic, runtime, view)
+  sont sous « MIT OR Apache-2.0 » (LICENSE-MIT, LICENSE-APACHE), au choix de l'utilisateur ;
+- la ligne de commande `mcf` (dossier `cli/`) reste sous GPL-3.0-only (LICENSE).
+
+Texte de la GPL pour `mcf` :
+
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
 Foundation, version 3 of the License (GPL-3.0-only).
