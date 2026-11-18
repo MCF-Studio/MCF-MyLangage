@@ -393,3 +393,28 @@ fn find(m: &Mounted, id: NodeId) -> &Mounted {
         })
         .expect("élément présent")
 }
+
+#[test]
+fn preorder_index_follows_parent_then_children_order() {
+    // Box
+    //  ├─ Text a            (1)
+    //  ├─ Box               (2)
+    //  │   ├─ Text b        (3)
+    //  │   └─ Text c        (4)
+    //  └─ Text d            (5)
+    let tree = Node::new(Kind::Box)
+        .child(text("a"))
+        .child(Node::new(Kind::Box).child(text("b")).child(text("c")))
+        .child(text("d"));
+    assert_eq!(tree.preorder_index(&[]), Some(0));
+    assert_eq!(tree.preorder_index(&[0]), Some(1));
+    assert_eq!(tree.preorder_index(&[1]), Some(2));
+    assert_eq!(tree.preorder_index(&[1, 0]), Some(3));
+    assert_eq!(tree.preorder_index(&[1, 1]), Some(4));
+    assert_eq!(tree.preorder_index(&[2]), Some(5));
+    // Chemins qui sortent de l'arbre.
+    assert_eq!(tree.preorder_index(&[3]), None);
+    assert_eq!(tree.preorder_index(&[0, 0]), None);
+    // Le rang est celui de la position dans le parcours.
+    assert_eq!(tree.count(), 6);
+}
