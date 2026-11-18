@@ -79,3 +79,34 @@ fn click_updates_globals_and_state() {
     assert!(!s.dispatch(&[0], Event::Click, None).unwrap());
     assert!(!s.dispatch(&[9], Event::Click, None).unwrap());
 }
+
+const HOVER_UI: &str = "
+ui Carte {
+    state survol: Bool = false;
+    view {
+        Box(onEnter: survol = true, onLeave: survol = false) {
+            Text(\"Carte\");
+            if (survol) then { Text(\"Survolée\"); }
+        }
+    }
+}
+";
+
+#[test]
+fn hover_events_toggle_state() {
+    let ui = mcf_syntax::parse_ui(HOVER_UI);
+    let ui_refs = [&ui.module];
+    let stubs = ui_stub_modules(&ui_refs);
+    let modules: Vec<_> = stubs.iter().collect();
+    let files = [SourceFile::new("c.uimcf", HOVER_UI)];
+    let dirs = [PathBuf::new()];
+    let mut s = ViewSession::new(&modules, &ui_refs, &files, &dirs, &PathBuf::new(), "Carte");
+
+    assert_eq!(s.view().unwrap().children.len(), 1);
+    assert!(s.dispatch(&[], Event::Enter, None).unwrap());
+    assert_eq!(s.view().unwrap().children.len(), 2);
+    assert!(s.dispatch(&[], Event::Leave, None).unwrap());
+    assert_eq!(s.view().unwrap().children.len(), 1);
+    // Le clic n'est pas écouté par cet élément.
+    assert!(!s.dispatch(&[], Event::Click, None).unwrap());
+}
