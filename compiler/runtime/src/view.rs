@@ -16,7 +16,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
-use std::sync::Mutex;
 
 use mcf_diagnostics::{codes, Diagnostic, SourceFile, Span};
 use mcf_syntax::ast::*;
@@ -237,13 +236,15 @@ impl<'a> ViewSession<'a> {
             ..
         } = self;
         let program = &*program;
+        // Un tour d'ordonnanceur sur un fil à grande pile (récursion des appels MCF) ; aucun
+        // autre fil n'est créé : les tâches de l'événement sont des futures du même fil.
         std::thread::scope(|s| {
             std::thread::Builder::new()
                 .name("mcf-view".into())
                 .stack_size(STACK_SIZE)
                 .spawn_scoped(s, || {
                     let shared = Shared {
-                        world: Mutex::new(World {
+                        world: RefCell::new(World {
                             out: &mut *out,
                             globals: std::mem::take(globals),
                             tasks: vec![TaskSlot::new()],
@@ -257,21 +258,24 @@ impl<'a> ViewSession<'a> {
                             listeners: std::mem::take(listeners),
                         }),
                     };
-                    let result = std::thread::scope(|scope| {
+                    let queue: Rc<Queue<'_>> = Rc::new(RefCell::new(Vec::new()));
+                    let result: Rc<RefCell<Option<Res<OpOut>>>> = Rc::new(RefCell::new(None));
+                    let (shared_ref, main_queue, main_result) =
+                        (&shared, Rc::clone(&queue), Rc::clone(&result));
+                    let main: TaskFuture<'_> = Box::pin(async move {
                         let mut it = Interp {
                             calls: Vec::new(),
-                            guard: Some(shared.lock()),
                             p: program,
-                            shared: &shared,
-                            scope,
+                            shared: shared_ref,
+                            queue: main_queue,
                             id: 0,
                         };
-                        let mut r = it.step(cx, initialized, component, op);
+                        let mut r = it.step(cx, initialized, component, op).await;
                         if r.is_ok() && matches!(op, Op::Event { .. }) {
                             // Les tâches lancées par l'événement vont jusqu'au bout.
                             let mut t = 1;
                             while t < it.w().tasks.len() {
-                                if let Err(e) = it.wait_for(t, None) {
+                                if let Err(e) = it.wait_for(t, None).await {
                                     r = Err(e);
                                     break;
                                 }
@@ -282,17 +286,24 @@ impl<'a> ViewSession<'a> {
                             Ok(_) => Ok(Value::Void),
                             Err(_) => Err(Stop::Abort),
                         });
-                        r
+                        *main_result.borrow_mut() = Some(r);
                     });
-                    let mut w = shared.lock();
+                    drive(&shared, &queue, main);
+                    let mut w = shared.world.borrow_mut();
                     *globals = std::mem::take(&mut w.globals);
                     *listeners = std::mem::take(&mut w.listeners);
                     let failed = w.failure.take();
                     drop(w);
-                    match (result, failed) {
-                        (Err(Stop::Error(e)), _) | (Ok(_), Some(e)) | (Err(_), Some(e)) => Err(e),
-                        (Err(_), None) => Err(failure("le traitement a été interrompu")),
-                        (Ok(v), None) => Ok(v),
+                    let outcome = result.borrow_mut().take();
+                    match (outcome, failed) {
+                        (Some(Err(Stop::Error(e))), _)
+                        | (Some(Ok(_)), Some(e))
+                        | (Some(Err(_)), Some(e)) => Err(e),
+                        (Some(Err(_)), None) | (None, None) => {
+                            Err(failure("le traitement a été interrompu"))
+                        }
+                        (None, Some(e)) => Err(e),
+                        (Some(Ok(v)), None) => Ok(v),
                     }
                 })
                 .map_err(|e| failure(&format!("impossible de démarrer le calcul : {e}")))?
@@ -313,9 +324,9 @@ fn main_prop(kind: Kind) -> Option<Prop> {
     }
 }
 
-impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
+impl<W: Write> Interp<'_, '_, '_, W> {
     /// Une opération de la session, avec le verrou de l'état partagé déjà pris.
-    fn step<'v>(
+    async fn step<'v>(
         &mut self,
         cx: &mut ViewCx<'v>,
         initialized: &mut bool,
@@ -323,11 +334,11 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         op: Op<'_>,
     ) -> Res<OpOut> {
         if !*initialized {
-            self.init_globals()?;
+            self.init_globals().await?;
             *initialized = true;
         }
         match op {
-            Op::Render => self.render(cx, component).map(OpOut::Tree),
+            Op::Render => self.render(cx, component).await.map(OpOut::Tree),
             Op::Event { index, event, text } => {
                 let mut found: Vec<Action<'v>> = cx
                     .actions
@@ -338,14 +349,14 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                 // La liaison met à jour le `state` avant que `onChange` ne le lise.
                 found.sort_by_key(|a| !matches!(a.kind, ActionKind::Bind(_)));
                 for a in &found {
-                    self.run_action(cx, a, text)?;
+                    self.run_action(cx, a, text).await?;
                 }
                 Ok(OpOut::Handled(!found.is_empty()))
             }
         }
     }
 
-    fn render<'v>(&mut self, cx: &mut ViewCx<'v>, name: &str) -> Res<Node> {
+    async fn render<'v>(&mut self, cx: &mut ViewCx<'v>, name: &str) -> Res<Node> {
         let Some(&Component { decl, file }) = cx.components.get(name) else {
             let mut names: Vec<&str> = cx.components.keys().copied().collect();
             names.sort_unstable();
@@ -366,7 +377,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         cx.actions.clear();
         cx.instances.clear();
         cx.instances.push(("racine".to_string(), 0));
-        let nodes = self.component_nodes(cx, decl, file, Vec::new());
+        let nodes = self.component_nodes(cx, decl, file, Vec::new()).await;
         cx.instances.clear();
         let mut nodes = nodes?;
         cx.wrapped = nodes.len() != 1;
@@ -381,7 +392,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
     }
 
     /// Exécute l'action d'un élément avec les variables vues au moment du calcul de la vue.
-    fn run_action<'v>(
+    async fn run_action<'v>(
         &mut self,
         cx: &mut ViewCx<'v>,
         a: &Action<'v>,
@@ -394,12 +405,12 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
             called_at: None,
             blocks: a.blocks.clone(),
         });
-        let r = self.action_body(cx, a, text);
+        let r = self.action_body(cx, a, text).await;
         self.calls.pop();
         r
     }
 
-    fn action_body<'v>(
+    async fn action_body<'v>(
         &mut self,
         cx: &mut ViewCx<'v>,
         a: &Action<'v>,
@@ -414,13 +425,13 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
             ActionKind::Run(UiValue::Expr(e)) => {
                 // `onClick: f` désigne une fonction sans argument ; `f(x)` est un appel.
                 if let Some(Entity::Func(id)) = self.entity_of(e) {
-                    self.call_func(id, None, Vec::new(), None)?;
+                    self.call_func(id, None, Vec::new(), None).await?;
                 } else {
-                    self.eval(e)?;
+                    self.eval(e).await?;
                 }
             }
             ActionKind::Run(UiValue::Assign { target, value, .. }) => {
-                let v = self.eval(value)?;
+                let v = self.eval(value).await?;
                 match &target.kind {
                     ExprKind::Name { ident } => {
                         cx.states.insert(key(&ident.name), v);
@@ -429,8 +440,8 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                 }
             }
             ActionKind::Run(UiValue::Emit { event, args, span }) => {
-                let values = args.iter().map(|x| self.eval(x)).collect::<Res<Vec<_>>>()?;
-                self.emit(event, values, &[], false, *span)?;
+                let values = self.eval_all(args).await?;
+                self.emit(event, values, &[], false, *span).await?;
             }
             ActionKind::Run(_) => {}
         }
@@ -439,7 +450,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
 
     /// Calcule la vue d'un composant avec les valeurs de `prop` données (les autres prennent
     /// leur valeur par défaut) ; ses `state` gardent leur valeur d'un calcul à l'autre.
-    fn component_nodes<'v>(
+    async fn component_nodes<'v>(
         &mut self,
         cx: &mut ViewCx<'v>,
         decl: &'v UiDecl,
@@ -460,12 +471,12 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
             called_at: None,
             blocks: vec![Locals::new()],
         });
-        let result = self.component_body(cx, decl, args);
+        let result = self.component_body(cx, decl, args).await;
         self.calls.pop();
         result
     }
 
-    fn component_body<'v>(
+    async fn component_body<'v>(
         &mut self,
         cx: &mut ViewCx<'v>,
         decl: &'v UiDecl,
@@ -478,7 +489,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                     Some(v) => v.clone(),
                     None => {
                         let v = match &m.init {
-                            Some(init) => self.eval(init)?,
+                            Some(init) => self.eval(init).await?,
                             None => return Err(self.internal(m.span, "`state` sans valeur")),
                         };
                         cx.states.insert(key, v.clone());
@@ -492,7 +503,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                     .map(|(_, v)| v.clone());
                 match (given, &m.init) {
                     (Some(v), _) => v,
-                    (None, Some(init)) => self.eval(init)?,
+                    (None, Some(init)) => self.eval(init).await?,
                     (None, None) => {
                         return Err(self.error_with(
                             Diagnostic::new(
@@ -513,25 +524,29 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
             return Ok(Vec::new());
         };
         cx.current.push(decl);
-        let nodes = self.view_nodes(cx, view);
+        let nodes = self.view_nodes(cx, view).await;
         cx.current.pop();
         nodes
     }
 
-    fn view_nodes<'v>(&mut self, cx: &mut ViewCx<'v>, nodes: &'v [ViewNode]) -> Res<Vec<Node>> {
+    async fn view_nodes<'v>(
+        &mut self,
+        cx: &mut ViewCx<'v>,
+        nodes: &'v [ViewNode],
+    ) -> Res<Vec<Node>> {
         let mut out = Vec::new();
         for n in nodes {
             match n {
-                ViewNode::Element(el) => out.extend(self.element(cx, el)?),
+                ViewNode::Element(el) => out.extend(self.element(cx, el).await?),
                 ViewNode::If(i) => {
-                    if self.eval_bool(&i.cond)? {
-                        out.extend(self.scoped(cx, &i.then_nodes)?);
+                    if self.eval_bool(&i.cond).await? {
+                        out.extend(Box::pin(self.scoped(cx, &i.then_nodes)).await?);
                     } else if let Some(e) = &i.else_nodes {
-                        out.extend(self.scoped(cx, e)?);
+                        out.extend(Box::pin(self.scoped(cx, e)).await?);
                     }
                 }
                 ViewNode::Foreach(f) => {
-                    let items: Vec<Value> = match self.eval(&f.iter)? {
+                    let items: Vec<Value> = match self.eval(&f.iter).await? {
                         Value::Array(a) => a.borrow().clone(),
                         Value::Map(m) => m.borrow().iter().map(|(k, _)| k.clone()).collect(),
                         _ => {
@@ -542,7 +557,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                     for item in items {
                         self.push_block();
                         self.declare_local(&f.binding.name, Some(item));
-                        let r = self.view_nodes(cx, &f.body);
+                        let r = Box::pin(self.view_nodes(cx, &f.body)).await;
                         self.pop_block();
                         out.extend(r?);
                     }
@@ -552,9 +567,9 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         Ok(out)
     }
 
-    fn scoped<'v>(&mut self, cx: &mut ViewCx<'v>, nodes: &'v [ViewNode]) -> Res<Vec<Node>> {
+    async fn scoped<'v>(&mut self, cx: &mut ViewCx<'v>, nodes: &'v [ViewNode]) -> Res<Vec<Node>> {
         self.push_block();
-        let r = self.view_nodes(cx, nodes);
+        let r = self.view_nodes(cx, nodes).await;
         self.pop_block();
         r
     }
@@ -571,8 +586,8 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         self.calls.last_mut().expect("appel en cours").blocks.pop();
     }
 
-    fn text_of(&mut self, expr: &Expr) -> Res<String> {
-        let v = self.eval(expr)?;
+    async fn text_of(&mut self, expr: &Expr) -> Res<String> {
+        let v = self.eval(expr).await?;
         Ok(display(&v, &self.p.types))
     }
 
@@ -589,9 +604,9 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         });
     }
 
-    fn element<'v>(&mut self, cx: &mut ViewCx<'v>, el: &'v Element) -> Res<Vec<Node>> {
+    async fn element<'v>(&mut self, cx: &mut ViewCx<'v>, el: &'v Element) -> Res<Vec<Node>> {
         let Some(kind) = Kind::from_name(&el.name.name) else {
-            return self.use_component(cx, el);
+            return self.use_component(cx, el).await;
         };
         // Rang de l'élément : parent avant enfants, comme `Node::preorder_index`.
         let index = cx.count;
@@ -605,7 +620,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         }
         let mut node = Node::new(kind);
         if let (Some(prop), Some(expr)) = (main_prop(kind), el.positional.first()) {
-            node.props.insert(prop, self.text_of(expr)?);
+            node.props.insert(prop, self.text_of(expr).await?);
         }
         // Style nommé d'abord, propriétés de l'élément ensuite (D54).
         for p in el.props.iter().filter(|p| p.name.name == "style") {
@@ -614,7 +629,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                 ..
             }) = &p.value
             {
-                self.apply_named_style(cx, &ident.name, &mut node)?;
+                self.apply_named_style(cx, &ident.name, &mut node).await?;
             }
         }
         for p in &el.props {
@@ -627,7 +642,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                 self.record(cx, index, event, ActionKind::Run(&p.value));
             } else if let Some(prop) = Prop::from_name(name) {
                 if let UiValue::Expr(e) = &p.value {
-                    node.props.insert(prop, self.text_of(e)?);
+                    node.props.insert(prop, self.text_of(e).await?);
                     if p.bind {
                         if let ExprKind::Name { ident } = &e.kind {
                             node.events.insert(Event::Change);
@@ -636,24 +651,24 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                     }
                 }
             } else if let Some(style) = Style::from_name(name) {
-                let value = self.style_value(style, &p.value)?;
+                let value = self.style_value(style, &p.value).await?;
                 node.style.insert(style, value);
             }
         }
         if let Some(children) = &el.children {
-            node.children = self.view_nodes(cx, children)?;
+            node.children = Box::pin(self.view_nodes(cx, children)).await?;
         }
         Ok(vec![node])
     }
 
-    fn use_component<'v>(&mut self, cx: &mut ViewCx<'v>, el: &'v Element) -> Res<Vec<Node>> {
+    async fn use_component<'v>(&mut self, cx: &mut ViewCx<'v>, el: &'v Element) -> Res<Vec<Node>> {
         let Some(&Component { decl, file }) = cx.components.get(el.name.name.as_str()) else {
             return Err(self.internal(el.span, "composant inconnu dans une vue vérifiée"));
         };
         let mut args = Vec::new();
         for p in &el.props {
             if let UiValue::Expr(e) = &p.value {
-                args.push((p.name.name.clone(), self.eval(e)?));
+                args.push((p.name.name.clone(), self.eval(e).await?));
             }
         }
         // Identité par position : parent, nom et rang d'utilisation dans ce parent.
@@ -663,12 +678,12 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
             format!("{parent}/{}#{counter}", decl.name.name)
         };
         cx.instances.push((child, 0));
-        let r = self.component_nodes(cx, decl, file, args);
+        let r = Box::pin(self.component_nodes(cx, decl, file, args)).await;
         cx.instances.pop();
         r
     }
 
-    fn apply_named_style<'v>(
+    async fn apply_named_style<'v>(
         &mut self,
         cx: &mut ViewCx<'v>,
         name: &str,
@@ -685,20 +700,20 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         };
         for p in &decl.props {
             if let Some(style) = Style::from_name(&p.name.name) {
-                let value = self.style_value(style, &p.value)?;
+                let value = self.style_value(style, &p.value).await?;
                 node.style.insert(style, value);
             }
         }
         Ok(())
     }
 
-    fn style_value(&mut self, style: Style, value: &UiValue) -> Res<StyleValue> {
+    async fn style_value(&mut self, style: Style, value: &UiValue) -> Res<StyleValue> {
         let span = value.span();
         match style {
             Style::Background | Style::Color | Style::BorderColor => {
                 let text = match value {
                     UiValue::Color { hex, .. } => format!("#{hex}"),
-                    UiValue::Expr(e) => self.text_of(e)?,
+                    UiValue::Expr(e) => self.text_of(e).await?,
                     _ => return Err(self.internal(span, "couleur attendue")),
                 };
                 Color::parse(&text).map(StyleValue::Color).ok_or_else(|| {
@@ -713,7 +728,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                 })
             }
             Style::FontWeight => {
-                let n = self.int_of(value)?;
+                let n = self.int_of(value).await?;
                 if (100..=900).contains(&n) {
                     Ok(StyleValue::Weight(n as u16))
                 } else {
@@ -722,7 +737,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
             }
             Style::Opacity => {
                 let x = match value {
-                    UiValue::Expr(e) => match self.eval(e)? {
+                    UiValue::Expr(e) => match self.eval(e).await? {
                         Value::Int(n) => n as f64,
                         Value::Float(f) => f,
                         _ => return Err(self.internal(span, "nombre attendu")),
@@ -736,7 +751,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                 }
             }
             Style::Grow => {
-                let n = self.int_of(value)?;
+                let n = self.int_of(value).await?;
                 if n >= 0 {
                     Ok(StyleValue::Grow(n))
                 } else {
@@ -744,7 +759,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                 }
             }
             Style::Visible => match value {
-                UiValue::Expr(e) => match self.eval(e)? {
+                UiValue::Expr(e) => match self.eval(e).await? {
                     Value::Bool(b) => Ok(StyleValue::Bool(b)),
                     _ => Err(self.internal(span, "booléen attendu")),
                 },
@@ -762,14 +777,14 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
             // Toutes les autres propriétés sont des longueurs.
             _ => match value {
                 UiValue::Percent { value, .. } => Ok(StyleValue::Length(Length::Percent(*value))),
-                _ => Ok(StyleValue::Length(Length::Px(self.int_of(value)?))),
+                _ => Ok(StyleValue::Length(Length::Px(self.int_of(value).await?))),
             },
         }
     }
 
-    fn int_of(&mut self, value: &UiValue) -> Res<i64> {
+    async fn int_of(&mut self, value: &UiValue) -> Res<i64> {
         match value {
-            UiValue::Expr(e) => match self.eval(e)? {
+            UiValue::Expr(e) => match self.eval(e).await? {
                 Value::Int(n) => Ok(n),
                 _ => Err(self.internal(e.span, "entier attendu")),
             },

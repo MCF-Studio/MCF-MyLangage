@@ -970,7 +970,13 @@ impl Analyzer {
                 if self.lookup_typed(name, ctx.table).is_none() {
                     self.undeclared(ident);
                 } else if self.is_config_name(name, ctx.table) {
-                    bad(self, ident.span, &format!("`{name}` vient d'un fichier de configuration : elle se lit seulement"));
+                    bad(
+                        self,
+                        ident.span,
+                        &format!(
+                            "`{name}` vient d'un fichier de configuration : elle se lit seulement"
+                        ),
+                    );
                 } else {
                     bad(
                         self,

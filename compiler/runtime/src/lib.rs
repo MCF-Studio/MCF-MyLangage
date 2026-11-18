@@ -6,11 +6,16 @@
 //!
 //! Règles d'exécution : `docs/grammaire/execution.md`.
 //!
-//! Tâches (`start` / `await`, DECISIONS D41) : chaque tâche a son propre fil système (sa pile),
-//! mais **une seule s'exécute à la fois**. L'état partagé ([`World`]) est derrière un verrou que
-//! seule la tâche « courante » détient ; elle ne le rend qu'aux points de suspension (`sleep`,
-//! `await`, fin de tâche) après avoir désigné la suivante. L'ordre est donc déterministe :
-//! file des tâches prêtes, puis minuteries dans l'ordre de leur échéance (horloge virtuelle).
+//! Tâches (`start` / `await`, DECISIONS D41, D69) : chaque tâche est une **future** (machine à
+//! états écrite par le compilateur Rust) ; aucun fil système n'est créé pour elles. Un petit
+//! ordonnanceur ([`drive`]) ne fait avancer que la tâche « courante », qui rend la main aux points
+//! de suspension (`sleep`, `await`, fin de tâche) après avoir désigné la suivante. L'ordre est
+//! déterministe : file des tâches prêtes, puis minuteries dans l'ordre de leur échéance
+//! (horloge virtuelle). Un seul fil à grande pile sert à la récursion des appels MCF.
+//!
+//! Reste à faire pour le web (D69) : une session qui garde ses tâches suspendues entre deux
+//! images (aujourd'hui, un événement va jusqu'au bout) et une attente de minuterie qui rend la
+//! main à l'hôte au lieu de bloquer (`std::thread::sleep`, `Instant`).
 
 mod config;
 mod value;
@@ -20,11 +25,15 @@ pub use view::{render_view, ui_stub_modules, ViewSession};
 
 pub use value::{deep_copy, equal, StructValue, Value};
 
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::future::Future;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::thread::Scope;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
 use mcf_diagnostics::{codes, Code, Diagnostic, SourceFile, Span};
@@ -150,7 +159,7 @@ fn failure(message: &str) -> Box<RuntimeError> {
     })
 }
 
-fn run_here<W: Write + Send>(
+fn run_here<W: Write>(
     modules: &[&Module],
     files: &[SourceFile],
     dirs: &[PathBuf],
@@ -160,7 +169,7 @@ fn run_here<W: Write + Send>(
     let mut program = Program::build(modules, files, dirs);
     program.root = root.to_path_buf();
     let shared = Shared {
-        world: Mutex::new(World {
+        world: RefCell::new(World {
             out,
             globals: vec![None; program.globals.len()],
             tasks: vec![TaskSlot::new()],
@@ -174,20 +183,21 @@ fn run_here<W: Write + Send>(
             listeners: Vec::new(),
         }),
     };
-    std::thread::scope(|scope| {
+    let queue: Rc<Queue<'_>> = Rc::new(RefCell::new(Vec::new()));
+    let (program_ref, shared_ref, main_queue) = (&program, &shared, Rc::clone(&queue));
+    let main: TaskFuture<'_> = Box::pin(async move {
         let mut it = Interp {
             calls: Vec::new(),
-            guard: Some(shared.lock()),
-            p: &program,
-            shared: &shared,
-            scope,
+            p: program_ref,
+            shared: shared_ref,
+            queue: main_queue,
             id: 0,
         };
-        let result = it.start().map(|()| Value::Void);
+        let result = it.start().await.map(|()| Value::Void);
         it.end_task(result);
     });
-    // Toutes les tâches sont terminées : il ne reste que ce fil.
-    let mut w = shared.lock();
+    drive(&shared, &queue, main);
+    let mut w = shared.world.borrow_mut();
     let _ = w.out.flush();
     match w.failure.take() {
         Some(e) => Err(e),
@@ -244,8 +254,6 @@ struct TaskSlot {
     waiters: Vec<usize>,
     /// Où la tâche attend (pour situer un blocage).
     waiting_at: Option<(usize, Span)>,
-    /// Réveille le fil de cette tâche seulement (et non tous les fils) quand vient son tour.
-    wake: Arc<Condvar>,
 }
 
 impl TaskSlot {
@@ -255,7 +263,6 @@ impl TaskSlot {
             cancel: false,
             waiters: Vec::new(),
             waiting_at: None,
-            wake: Arc::new(Condvar::new()),
         }
     }
 
@@ -264,7 +271,7 @@ impl TaskSlot {
     }
 }
 
-/// État partagé par toutes les tâches, accessible uniquement à la tâche courante.
+/// État partagé par toutes les tâches (une seule s'exécute à la fois).
 struct World<'o, W> {
     out: &'o mut W,
     globals: Vec<Option<Value>>,
@@ -294,70 +301,132 @@ struct ListenerSlot {
 }
 
 impl<W> World<'_, W> {
-    /// Donne la main à la tâche `next` et réveille son fil.
+    /// Donne la main à la tâche `next` : l'ordonnanceur la fera avancer au prochain tour.
     fn hand_over(&mut self, next: usize) {
         self.current = next;
-        self.tasks[next].wake.notify_one();
     }
 
-    /// Arrêt général : toutes les tâches se réveillent pour s'arrêter.
+    /// Arrêt général : chaque tâche s'arrêtera au prochain point de suspension.
     fn abort(&mut self) {
         self.aborted = true;
-        for t in &self.tasks {
-            t.wake.notify_one();
-        }
     }
 }
 
 struct Shared<'o, W> {
-    world: Mutex<World<'o, W>>,
+    world: RefCell<World<'o, W>>,
 }
 
-impl<'o, W> Shared<'o, W> {
-    fn lock(&self) -> MutexGuard<'_, World<'o, W>> {
-        // Un verrou « empoisonné » vient d'une panique déjà en cours de traitement : on
-        // poursuit l'arrêt.
-        self.world.lock().unwrap_or_else(PoisonError::into_inner)
-    }
+/// Une tâche : future qui rend la main à chaque point de suspension (`sleep`, `await`).
+type TaskFuture<'env> = Pin<Box<dyn Future<Output = ()> + 'env>>;
 
-    /// Endort la tâche `id` jusqu'à son tour (ou jusqu'à l'arrêt général).
-    fn wait_turn<'g>(
-        &self,
-        guard: MutexGuard<'g, World<'o, W>>,
-        id: usize,
-    ) -> MutexGuard<'g, World<'o, W>> {
-        let wake = Arc::clone(&guard.tasks[id].wake);
-        wake.wait_while(guard, |w| w.current != id && !w.aborted)
-            .unwrap_or_else(PoisonError::into_inner)
+/// Tâches créées par `start` pendant un tour, que l'ordonnanceur ajoute à sa liste.
+type Queue<'env> = RefCell<Vec<(usize, TaskFuture<'env>)>>;
+
+/// Boîte de future pour les fonctions récursives de l'interpréteur.
+type BoxFut<'s, T> = Pin<Box<dyn Future<Output = T> + 's>>;
+
+/// Attend que ce soit le tour de la tâche `id` (ou l'arrêt général).
+struct Turn<'e, 'o, W> {
+    shared: &'e Shared<'o, W>,
+    id: usize,
+}
+
+impl<W> Future for Turn<'_, '_, W> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+        let w = self.shared.world.borrow();
+        if w.current == self.id || w.aborted {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
     }
 }
 
-/// Corps du fil d'une tâche lancée par `start`.
-fn task_main<'scope, 'env, 'o, 'a, W: Write + Send>(
+struct NoWake;
+
+impl Wake for NoWake {
+    fn wake(self: Arc<Self>) {}
+}
+
+/// Ordonnanceur : fait avancer la tâche désignée par `current`, une à la fois, jusqu'à ce que
+/// toutes soient terminées. Aucun fil système : l'ordre est celui de la file des tâches prêtes
+/// puis des minuteries (déterministe).
+fn drive<'env, W: Write>(shared: &'env Shared<'_, W>, queue: &Queue<'env>, main: TaskFuture<'env>) {
+    let waker = Waker::from(Arc::new(NoWake));
+    let mut cx = Context::from_waker(&waker);
+    let mut futures: Vec<Option<TaskFuture<'env>>> = vec![Some(main)];
+    loop {
+        for (id, f) in queue.borrow_mut().drain(..) {
+            while futures.len() <= id {
+                futures.push(None);
+            }
+            futures[id] = Some(f);
+        }
+        if futures.iter().all(Option::is_none) {
+            break;
+        }
+        let (current, aborted) = {
+            let w = shared.world.borrow();
+            (w.current, w.aborted)
+        };
+        if aborted {
+            // Chaque tâche reprend, voit l'arrêt et se termine.
+            for slot in &mut futures {
+                if let Some(f) = slot {
+                    if f.as_mut().poll(&mut cx).is_ready() {
+                        *slot = None;
+                    }
+                }
+            }
+            continue;
+        }
+        match futures.get_mut(current) {
+            Some(slot @ Some(_)) => {
+                let done = slot
+                    .as_mut()
+                    .is_some_and(|f| f.as_mut().poll(&mut cx).is_ready());
+                if done {
+                    *slot = None;
+                }
+            }
+            // La tâche courante est terminée et personne ne lui a succédé : plus rien à faire.
+            _ => break,
+        }
+    }
+    queue.borrow_mut().clear();
+}
+
+/// Corps d'une tâche lancée par `start`.
+async fn task_main<'env, 'o, 'a, W: Write>(
     p: &'env Program<'a>,
     shared: &'env Shared<'o, W>,
-    scope: &'scope Scope<'scope, 'env>,
+    queue: Rc<Queue<'env>>,
     id: usize,
     job: Job,
     called_at: (usize, Span),
 ) {
-    let guard = shared.wait_turn(shared.lock(), id);
+    Turn { shared, id }.await;
     let mut it = Interp {
         calls: Vec::new(),
-        guard: Some(guard),
         p,
         shared,
-        scope,
+        queue,
         id,
     };
-    let result = if it.w().aborted {
+    let (aborted, cancelled) = {
+        let w = it.w();
+        (w.aborted, w.tasks[id].cancel)
+    };
+    let result = if aborted {
         drop(job);
         Err(Stop::Abort)
-    } else if it.w().tasks[id].cancel {
+    } else if cancelled {
         drop(job);
         Err(Stop::Cancelled)
     } else {
-        it.run_job(job, called_at)
+        it.run_job(job, called_at).await
     };
     it.end_task(result);
 }
@@ -672,46 +741,26 @@ enum Kind {
 }
 
 /// Une tâche en cours d'exécution.
-///
-/// `calls` est déclaré avant `guard` : la pile est libérée verrou détenu, même si le fil panique.
-struct Interp<'scope, 'env, 'o, 'a, W: Write + Send> {
+struct Interp<'env, 'o, 'a, W: Write> {
     calls: Vec<CallFrame>,
-    /// Verrou de l'état partagé ; `None` seulement pendant une suspension ou après la fin.
-    guard: Option<MutexGuard<'env, World<'o, W>>>,
     p: &'env Program<'a>,
     shared: &'env Shared<'o, W>,
-    scope: &'scope Scope<'scope, 'env>,
+    /// Où ajouter les tâches créées par `start`.
+    queue: Rc<Queue<'env>>,
     /// Numéro de cette tâche.
     id: usize,
 }
 
-impl<W: Write + Send> Drop for Interp<'_, '_, '_, '_, W> {
-    fn drop(&mut self) {
-        // Panique (bug de l'interpréteur) : arrêter les autres tâches au lieu de les laisser
-        // attendre un tour qui ne viendrait jamais.
-        if std::thread::panicking() {
-            if let Some(w) = self.guard.as_mut() {
-                w.abort();
-            }
-        }
-    }
-}
-
-impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
-    fn w(&self) -> &World<'o, W> {
-        self.guard
-            .as_ref()
-            .expect("la tâche courante détient le verrou")
+impl<'env, 'o, 'a, W: Write> Interp<'env, 'o, 'a, W> {
+    fn w(&self) -> Ref<'_, World<'o, W>> {
+        self.shared.world.borrow()
     }
 
-    fn wm(&mut self) -> &mut World<'o, W> {
-        self.guard
-            .as_mut()
-            .expect("la tâche courante détient le verrou")
+    fn wm(&self) -> RefMut<'_, World<'o, W>> {
+        self.shared.world.borrow_mut()
     }
 
-    /// Initialise les globales : configurations d'abord, puis variables dans l'ordre.
-    fn init_globals(&mut self) -> Res<()> {
+    async fn init_globals(&mut self) -> Res<()> {
         let p = self.p;
         // Les configurations d'abord : une globale peut être calculée à partir d'elles.
         for (slot, g) in p.globals.iter().enumerate() {
@@ -741,7 +790,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 blocks: Vec::new(),
             });
             let value = match &decl.init {
-                Some(init) => Some(self.init_value(init, &decl.ty)?),
+                Some(init) => Some(self.init_value(init, &decl.ty).await?),
                 None => default_value(&decl.ty),
             };
             self.wm().globals[slot] = value;
@@ -750,7 +799,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         Ok(())
     }
 
-    fn start(&mut self) -> Res<()> {
+    async fn start(&mut self) -> Res<()> {
         let p = self.p;
         let Some(main) = p.entry_point() else {
             return Err(Stop::Error(Box::new(RuntimeError {
@@ -764,12 +813,12 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 trace: Vec::new(),
             })));
         };
-        self.init_globals()?;
-        self.call_func(main, None, Vec::new(), None)?;
+        self.init_globals().await?;
+        self.call_func(main, None, Vec::new(), None).await?;
         // Le programme se termine quand toutes les tâches lancées sont terminées.
         let mut t = 1;
         while t < self.w().tasks.len() {
-            self.wait_for(t, None)?;
+            self.wait_for(t, None).await?;
             t += 1;
         }
         Ok(())
@@ -780,7 +829,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     /// Désigne la prochaine tâche à exécuter : d'abord les tâches prêtes, puis la minuterie la
     /// plus proche (on attend alors réellement son échéance). `None` : plus rien ne peut avancer.
     fn pick_next(&mut self) -> Option<usize> {
-        let w = self.wm();
+        let mut w = self.wm();
         if let Some(next) = w.ready.pop_front() {
             return Some(next);
         }
@@ -810,7 +859,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
 
     /// Point de suspension : l'état de cette tâche a déjà été mis à jour (`Sleeping`,
     /// `Waiting`). Passe la main et revient quand c'est de nouveau son tour.
-    fn suspend(&mut self, at: Option<(usize, Span)>) -> Res<()> {
+    async fn suspend(&mut self, at: Option<(usize, Span)>) -> Res<()> {
         let Some(next) = self.pick_next() else {
             return Err(Stop::Error(Self::deadlock(
                 at,
@@ -819,8 +868,11 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         };
         if next != self.id {
             self.wm().hand_over(next);
-            let guard = self.guard.take().expect("verrou détenu");
-            self.guard = Some(self.shared.wait_turn(guard, self.id));
+            Turn {
+                shared: self.shared,
+                id: self.id,
+            }
+            .await;
         }
         let id = self.id;
         let w = self.w();
@@ -834,19 +886,21 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     }
 
     /// `sleep(ms)` : laisse tourner les autres tâches pendant au moins `ms` millisecondes.
-    fn sleep(&mut self, ms: u64) -> Res<()> {
+    async fn sleep(&mut self, ms: u64) -> Res<()> {
         let id = self.id;
-        let w = self.wm();
-        let key = (w.clock.saturating_add(ms), w.seq);
-        w.seq += 1;
-        w.timers
-            .insert(key, (id, Instant::now() + Duration::from_millis(ms)));
-        w.tasks[id].state = TaskState::Sleeping(key);
-        self.suspend(None)
+        {
+            let mut w = self.wm();
+            let key = (w.clock.saturating_add(ms), w.seq);
+            w.seq += 1;
+            w.timers
+                .insert(key, (id, Instant::now() + Duration::from_millis(ms)));
+            w.tasks[id].state = TaskState::Sleeping(key);
+        }
+        self.suspend(None).await
     }
 
     /// Attend que la tâche `t` soit terminée (ou annulée).
-    fn wait_for(&mut self, t: usize, at: Option<(usize, Span)>) -> Res<()> {
+    async fn wait_for(&mut self, t: usize, at: Option<(usize, Span)>) -> Res<()> {
         if t == self.id {
             return Err(Stop::Error(Self::deadlock(
                 at,
@@ -855,19 +909,21 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         }
         while !self.w().tasks[t].finished() {
             let id = self.id;
-            let w = self.wm();
-            w.tasks[t].waiters.push(id);
-            w.tasks[id].state = TaskState::Waiting(t);
-            w.tasks[id].waiting_at = at;
-            self.suspend(at)?;
+            {
+                let mut w = self.wm();
+                w.tasks[t].waiters.push(id);
+                w.tasks[id].state = TaskState::Waiting(t);
+                w.tasks[id].waiting_at = at;
+            }
+            self.suspend(at).await?;
         }
         Ok(())
     }
 
     /// `await t` : le résultat de la tâche, ou MCF0410 si elle a été annulée.
-    fn await_task(&mut self, t: usize, span: Span) -> Res<Value> {
+    async fn await_task(&mut self, t: usize, span: Span) -> Res<Value> {
         let at = Some((self.frame().file, span));
-        self.wait_for(t, at)?;
+        self.wait_for(t, at).await?;
         match &self.w().tasks[t].state {
             TaskState::Done(v) => Ok(v.clone()),
             _ => Err(self.error_with(
@@ -882,32 +938,20 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     }
 
     /// `start` : crée la tâche (prête, après celles déjà en file) et son fil.
-    fn spawn(&mut self, job: Job, called_at: (usize, Span)) -> Res<Value> {
+    async fn spawn(&mut self, job: Job, called_at: (usize, Span)) -> Res<Value> {
         let id = self.w().tasks.len();
-        let w = self.wm();
-        w.tasks.push(TaskSlot::new());
-        w.ready.push_back(id);
-        let (p, shared, scope) = (self.p, self.shared, self.scope);
-        let spawned = std::thread::Builder::new()
-            .name(format!("mcf-task-{id}"))
-            .stack_size(STACK_SIZE)
-            .spawn_scoped(scope, move || {
-                task_main(p, shared, scope, id, job, called_at)
-            });
-        if let Err(e) = spawned {
-            let w = self.wm();
-            w.ready.retain(|&t| t != id);
-            w.tasks[id].state = TaskState::Cancelled;
-            return Err(self.error(
-                &codes::TASK_START_FAILED,
-                called_at.1,
-                format!("impossible de démarrer la tâche : {e}"),
-            ));
+        {
+            let mut w = self.wm();
+            w.tasks.push(TaskSlot::new());
+            w.ready.push_back(id);
         }
+        let (p, shared, queue) = (self.p, self.shared, Rc::clone(&self.queue));
+        let task: TaskFuture<'env> = Box::pin(task_main(p, shared, queue, id, job, called_at));
+        self.queue.borrow_mut().push((id, task));
         Ok(Value::Task(id))
     }
 
-    fn run_job(&mut self, job: Job, called_at: (usize, Span)) -> Res<Value> {
+    async fn run_job(&mut self, job: Job, called_at: (usize, Span)) -> Res<Value> {
         if let Job::Handler {
             event,
             index,
@@ -915,11 +959,12 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             meta,
         } = job
         {
-            self.run_handler(&event, index, args, meta, called_at)?;
+            self.run_handler(&event, index, args, meta, called_at)
+                .await?;
             return Ok(Value::Void);
         }
         if matches!(job, Job::Func { .. }) {
-            return self.invoke(job, called_at);
+            return self.invoke(job, called_at).await;
         }
         // Fonction ou méthode native : un cadre d'appel situe les erreurs éventuelles.
         self.calls.push(CallFrame {
@@ -929,7 +974,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             called_at: Some(called_at),
             blocks: Vec::new(),
         });
-        let v = self.invoke(job, called_at)?;
+        let v = self.invoke(job, called_at).await?;
         self.calls.pop();
         Ok(v)
     }
@@ -938,25 +983,28 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     fn end_task(mut self, result: Res<Value>) {
         self.calls.clear();
         let id = self.id;
-        let w = self.wm();
-        w.tasks[id].state = match result {
-            Ok(v) => TaskState::Done(v),
-            Err(Stop::Error(e)) => {
-                w.failure.get_or_insert(e);
-                w.abort();
-                TaskState::Cancelled
+        let aborted = {
+            let mut w = self.wm();
+            w.tasks[id].state = match result {
+                Ok(v) => TaskState::Done(v),
+                Err(Stop::Error(e)) => {
+                    w.failure.get_or_insert(e);
+                    w.abort();
+                    TaskState::Cancelled
+                }
+                Err(Stop::Cancelled | Stop::Abort) => TaskState::Cancelled,
+            };
+            for waiter in std::mem::take(&mut w.tasks[id].waiters) {
+                w.tasks[waiter].state = TaskState::Active;
+                w.ready.push_back(waiter);
             }
-            Err(Stop::Cancelled | Stop::Abort) => TaskState::Cancelled,
+            w.aborted
         };
-        for waiter in std::mem::take(&mut w.tasks[id].waiters) {
-            w.tasks[waiter].state = TaskState::Active;
-            w.ready.push_back(waiter);
-        }
-        if !w.aborted {
+        if !aborted {
             match self.pick_next() {
                 Some(next) => self.wm().hand_over(next),
                 None => {
-                    let w = self.wm();
+                    let mut w = self.wm();
                     if let Some(stuck) = w.tasks.iter().find(|t| !t.finished()) {
                         let e = Self::deadlock(
                             stuck.waiting_at,
@@ -968,13 +1016,12 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 }
             }
         }
-        self.guard = None;
     }
 
     /// `t.cancel()` : sans effet sur une tâche terminée ; sinon la tâche s'arrête à son
     /// prochain point de suspension (tout de suite si elle dort ou attend).
     fn cancel(&mut self, t: usize) {
-        let w = self.wm();
+        let mut w = self.wm();
         if w.tasks[t].finished() {
             return;
         }
@@ -1045,18 +1092,18 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
 
     /// Valeur initiale d'une variable déclarée avec le type `ty` : `loadConfig(chemin)` lit le
     /// fichier avec ce type (la vérification garantit qu'il n'apparaît que là).
-    fn init_value(&mut self, init: &Expr, ty: &TypeDecl) -> Res<Value> {
+    async fn init_value(&mut self, init: &Expr, ty: &TypeDecl) -> Res<Value> {
         if let ExprKind::Call { callee, args } = &init.kind {
             if let ([arg], Some(Entity::Builtin(Builtin::LoadConfig))) =
                 (args.as_slice(), self.entity_of(callee))
             {
-                let Value::Str(path) = self.eval(arg)? else {
+                let Value::Str(path) = self.eval(arg).await? else {
                     return Err(self.internal(arg.span, "`loadConfig` sans chaîne"));
                 };
                 return self.read_config(ty, &path, arg.span, false);
             }
         }
-        self.eval(init)
+        self.eval(init).await
     }
 
     /// Lit un `.cfg` pour le type `ty`, depuis le dossier du fichier en cours.
@@ -1159,7 +1206,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     // ---------------------------------------------------------------- appels
 
     /// Appelle une fonction, ou une méthode quand `receiver` est donné (il devient `self`).
-    fn call_func(
+    async fn call_func(
         &mut self,
         id: usize,
         receiver: Option<Value>,
@@ -1196,7 +1243,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             called_at,
             blocks: vec![locals],
         });
-        let flow = self.exec_block(&f.decl.body)?;
+        let flow = self.exec_block(&f.decl.body).await?;
         self.calls.pop();
         Ok(match flow {
             Flow::Return(v) => v,
@@ -1206,12 +1253,12 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
 
     /// Évalue ce qu'un appel désigne et ses arguments (le receveur d'une méthode d'abord),
     /// sans l'exécuter : partagé par l'appel direct et par `start`.
-    fn prepare_call(&mut self, callee: &Expr, args: &[Expr]) -> Res<Job> {
+    async fn prepare_call(&mut self, callee: &Expr, args: &[Expr]) -> Res<Job> {
         let target = self.entity_of(callee);
         let spans: Vec<Span> = args.iter().map(|a| a.span).collect();
         if let (None, ExprKind::Member { object, field }) = (target, &callee.kind) {
-            let receiver = self.eval(object)?;
-            let args = args.iter().map(|a| self.eval(a)).collect::<Res<Vec<_>>>()?;
+            let receiver = self.eval(object).await?;
+            let args = self.eval_all(args).await?;
             if let Value::Struct(s) = &receiver {
                 let key = (s.borrow().id, field.name.clone());
                 let Some(&id) = self.p.methods.get(&key) else {
@@ -1230,7 +1277,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 spans,
             });
         }
-        let args = args.iter().map(|a| self.eval(a)).collect::<Res<Vec<_>>>()?;
+        let args = self.eval_all(args).await?;
         match target {
             Some(Entity::Func(id)) => Ok(Job::Func {
                 id,
@@ -1249,27 +1296,30 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         }
     }
 
-    fn invoke(&mut self, job: Job, called_at: (usize, Span)) -> Res<Value> {
+    async fn invoke(&mut self, job: Job, called_at: (usize, Span)) -> Res<Value> {
         match job {
-            Job::Func { id, receiver, args } => self.call_func(id, receiver, args, Some(called_at)),
+            Job::Func { id, receiver, args } => {
+                self.call_func(id, receiver, args, Some(called_at)).await
+            }
             Job::Builtin {
                 builtin,
                 args,
                 spans,
-            } => self.call_builtin(builtin, args, &spans),
+            } => self.call_builtin(builtin, args, &spans).await,
             Job::Native {
                 receiver,
                 method,
                 args,
                 spans,
-            } => self.call_method(receiver, &method, args, &spans),
+            } => self.call_method(receiver, &method, args, &spans).await,
             Job::Handler {
                 event,
                 index,
                 args,
                 meta,
             } => {
-                self.run_handler(&event, index, args, meta, called_at)?;
+                self.run_handler(&event, index, args, meta, called_at)
+                    .await?;
                 Ok(Value::Void)
             }
         }
@@ -1284,7 +1334,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     /// Les gestionnaires `on` fixes passent d'abord, puis les abonnements `on X => f` actifs,
     /// dans l'ordre où ils ont été créés (D45). Un abonnement créé pendant l'`emit` attend le
     /// suivant ; un abonnement arrêté pendant l'`emit` n'est plus appelé.
-    fn emit(
+    async fn emit(
         &mut self,
         event: &Path,
         args: Vec<Value>,
@@ -1296,7 +1346,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         let name = path_text(event);
         let count = p.handlers.get(&name).map_or(0, Vec::len);
         let called_at = (self.frame().file, span);
-        let meta = self.build_meta(&name, &args, meta, called_at)?;
+        let meta = self.build_meta(&name, &args, meta, called_at).await?;
         for index in 0..count {
             if background {
                 let job = Job::Handler {
@@ -1305,29 +1355,33 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                     args: args.clone(),
                     meta: meta.clone(),
                 };
-                self.spawn(job, called_at)?;
+                self.spawn(job, called_at).await?;
             } else {
-                self.run_handler(&name, index, args.clone(), meta.clone(), called_at)?;
+                self.run_handler(&name, index, args.clone(), meta.clone(), called_at)
+                    .await?;
             }
         }
         let subscribed: Vec<usize> = (0..self.w().listeners.len())
             .filter(|&l| self.w().listeners[l].event == name)
             .collect();
         for l in subscribed {
-            let slot = &self.w().listeners[l];
-            if !slot.active {
+            let (active, func) = {
+                let w = self.w();
+                (w.listeners[l].active, w.listeners[l].func)
+            };
+            if !active {
                 continue;
             }
-            let func = slot.func;
             if background {
                 let job = Job::Func {
                     id: func,
                     receiver: None,
                     args: args.clone(),
                 };
-                self.spawn(job, called_at)?;
+                self.spawn(job, called_at).await?;
             } else {
-                self.call_func(func, None, args.clone(), Some(called_at))?;
+                self.call_func(func, None, args.clone(), Some(called_at))
+                    .await?;
             }
         }
         Ok(())
@@ -1336,7 +1390,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     /// Métadonnées d'un `emit` (D46) : les valeurs données (calculées chez l'émetteur, dans
     /// l'ordre écrit), puis les valeurs par défaut des autres (calculées dans le contexte de
     /// la déclaration, données de l'événement lisibles), puis `source`.
-    fn build_meta(
+    async fn build_meta(
         &mut self,
         event: &str,
         args: &[Value],
@@ -1349,7 +1403,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         };
         let mut given = Vec::new();
         for f in inits {
-            given.push((f.name.name.as_str(), self.eval(&f.value)?));
+            given.push((f.name.name.as_str(), self.eval(&f.value).await?));
         }
         let locals: Locals = info
             .decl
@@ -1369,7 +1423,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         for m in &info.decl.meta {
             match given.iter().position(|(n, _)| *n == m.name.name) {
                 Some(i) => fields.push(given.swap_remove(i).1),
-                None => fields.push(self.eval(&m.default)?),
+                None => fields.push(self.eval(&m.default).await?),
             }
         }
         self.calls.pop();
@@ -1387,7 +1441,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
     }
 
     /// Exécute le gestionnaire `on` n° `index` de l'événement `event`.
-    fn run_handler(
+    async fn run_handler(
         &mut self,
         event: &str,
         index: usize,
@@ -1423,12 +1477,17 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             called_at: Some(called_at),
             blocks: vec![locals],
         });
-        self.exec_block(&h.decl.body)?;
+        self.exec_block(&h.decl.body).await?;
         self.calls.pop();
         Ok(())
     }
 
-    fn call_builtin(&mut self, b: Builtin, args: Vec<Value>, arg_spans: &[Span]) -> Res<Value> {
+    async fn call_builtin(
+        &mut self,
+        b: Builtin,
+        args: Vec<Value>,
+        arg_spans: &[Span],
+    ) -> Res<Value> {
         let [arg] = args.as_slice() else {
             return Err(self.internal(
                 arg_spans.first().copied().unwrap_or(Span::new(0, 0)),
@@ -1464,14 +1523,14 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                         .received(ms.to_string()),
                     ));
                 };
-                self.sleep(ms)?;
+                self.sleep(ms).await?;
             }
         }
         Ok(Value::Void)
     }
 
     /// Méthodes natives (DECISIONS D38). Les signatures ont été vérifiées par `mcf_semantic`.
-    fn call_method(
+    async fn call_method(
         &mut self,
         recv: Value,
         method: &Ident,
@@ -1551,7 +1610,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
 
     // ---------------------------------------------------------------- instructions
 
-    fn exec_block(&mut self, block: &Block) -> Res<Flow> {
+    async fn exec_block(&mut self, block: &Block) -> Res<Flow> {
         self.calls
             .last_mut()
             .expect("un appel est en cours")
@@ -1559,7 +1618,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             .push(Locals::new());
         let mut flow = Flow::Next;
         for stmt in &block.stmts {
-            flow = self.exec_stmt(stmt)?;
+            flow = self.exec_stmt(stmt).await?;
             if !matches!(flow, Flow::Next) {
                 break;
             }
@@ -1578,21 +1637,25 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         }
     }
 
-    fn exec_stmt(&mut self, stmt: &Stmt) -> Res<Flow> {
+    fn exec_stmt<'s>(&'s mut self, stmt: &'s Stmt) -> BoxFut<'s, Res<Flow>> {
+        Box::pin(self.exec_stmt_inner(stmt))
+    }
+
+    async fn exec_stmt_inner(&mut self, stmt: &Stmt) -> Res<Flow> {
         match stmt {
             Stmt::Local(v) => {
                 // La valeur est calculée avant la déclaration (comme à la vérification).
                 let value = match &v.init {
-                    Some(init) => Some(self.init_value(init, &v.ty)?),
+                    Some(init) => Some(self.init_value(init, &v.ty).await?),
                     None => default_value(&v.ty),
                 };
                 self.declare_local(&v.name.name, value);
             }
-            Stmt::Assign { target, value, .. } => self.assign(target, value)?,
-            Stmt::If(i) => return self.exec_if(i),
+            Stmt::Assign { target, value, .. } => self.assign(target, value).await?,
+            Stmt::If(i) => return self.exec_if(i).await,
             Stmt::While { cond, body, .. } => {
-                while self.eval_bool(cond)? {
-                    match self.exec_block(body)? {
+                while self.eval_bool(cond).await? {
+                    match self.exec_block(body).await? {
                         Flow::Break => break,
                         Flow::Return(v) => return Ok(Flow::Return(v)),
                         Flow::Next | Flow::Continue => {}
@@ -1611,7 +1674,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                     .expect("appel en cours")
                     .blocks
                     .push(Locals::new());
-                let result = self.exec_for(init, cond, step, body);
+                let result = self.exec_for(init, cond, step, body).await;
                 self.calls.last_mut().expect("appel en cours").blocks.pop();
                 return result;
             }
@@ -1622,7 +1685,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 ..
             } => {
                 // On parcourt le contenu tel qu'il est au début de la boucle.
-                let items: Vec<Value> = match self.eval(iter)? {
+                let items: Vec<Value> = match self.eval(iter).await? {
                     Value::Array(a) => a.borrow().clone(),
                     Value::Map(m) => m.borrow().iter().map(|(k, _)| k.clone()).collect(),
                     _ => {
@@ -1638,7 +1701,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                         .blocks
                         .push(Locals::new());
                     self.declare_local(&binding.name, Some(item));
-                    let flow = self.exec_block(body);
+                    let flow = self.exec_block(body).await;
                     self.calls.last_mut().expect("appel en cours").blocks.pop();
                     match flow? {
                         Flow::Break => break,
@@ -1649,7 +1712,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             }
             Stmt::Return { value, .. } => {
                 let v = match value {
-                    Some(e) => self.eval(e)?,
+                    Some(e) => self.eval(e).await?,
                     None => Value::Void,
                 };
                 return Ok(Flow::Return(v));
@@ -1663,46 +1726,52 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 background,
                 span,
             } => {
-                let values = args.iter().map(|a| self.eval(a)).collect::<Res<Vec<_>>>()?;
-                self.emit(event, values, meta, *background, *span)?;
+                let values = self.eval_all(args).await?;
+                self.emit(event, values, meta, *background, *span).await?;
             }
             Stmt::Expr { expr, .. } => {
-                self.eval(expr)?;
+                self.eval(expr).await?;
             }
         }
         Ok(Flow::Next)
     }
 
-    fn exec_for(&mut self, init: &VarDecl, cond: &Expr, step: &Stmt, body: &Block) -> Res<Flow> {
-        self.exec_stmt(&Stmt::Local(init.clone()))?;
-        while self.eval_bool(cond)? {
-            match self.exec_block(body)? {
+    async fn exec_for(
+        &mut self,
+        init: &VarDecl,
+        cond: &Expr,
+        step: &Stmt,
+        body: &Block,
+    ) -> Res<Flow> {
+        self.exec_stmt(&Stmt::Local(init.clone())).await?;
+        while self.eval_bool(cond).await? {
+            match self.exec_block(body).await? {
                 Flow::Break => break,
                 Flow::Return(v) => return Ok(Flow::Return(v)),
                 Flow::Next | Flow::Continue => {}
             }
-            self.exec_stmt(step)?;
+            self.exec_stmt(step).await?;
         }
         Ok(Flow::Next)
     }
 
-    fn exec_if(&mut self, i: &IfStmt) -> Res<Flow> {
-        if self.eval_bool(&i.cond)? {
-            self.exec_block(&i.then_block)
+    async fn exec_if(&mut self, i: &IfStmt) -> Res<Flow> {
+        if self.eval_bool(&i.cond).await? {
+            self.exec_block(&i.then_block).await
         } else {
             match &i.else_branch {
-                Some(Else::Block(b)) => self.exec_block(b),
-                Some(Else::If(nested)) => self.exec_if(nested),
+                Some(Else::Block(b)) => self.exec_block(b).await,
+                Some(Else::If(nested)) => Box::pin(self.exec_if(nested)).await,
                 None => Ok(Flow::Next),
             }
         }
     }
 
-    fn assign(&mut self, target: &Expr, value: &Expr) -> Res<()> {
+    async fn assign(&mut self, target: &Expr, value: &Expr) -> Res<()> {
         match &target.kind {
-            ExprKind::Paren { expr } => self.assign(expr, value),
+            ExprKind::Paren { expr } => Box::pin(self.assign(expr, value)).await,
             ExprKind::Name { ident } => {
-                let v = self.eval(value)?;
+                let v = self.eval(value).await?;
                 if let Some(slot) = self.find_local_mut(&ident.name) {
                     *slot = Some(v);
                     return Ok(());
@@ -1717,7 +1786,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             }
             ExprKind::Member { object, field } => {
                 if let Some(Entity::Scope(t)) = self.entity_of(object) {
-                    let v = self.eval(value)?;
+                    let v = self.eval(value).await?;
                     return match self.p.tables[t].names.get(&field.name) {
                         Some(Entity::Global(slot)) => {
                             self.wm().globals[*slot] = Some(v);
@@ -1726,8 +1795,8 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                         _ => Err(self.internal(field.span, "membre de scope non affectable")),
                     };
                 }
-                let obj = self.eval(object)?;
-                let v = self.eval(value)?;
+                let obj = self.eval(object).await?;
+                let v = self.eval(value).await?;
                 let Value::Struct(s) = obj else {
                     return Err(self.internal(
                         object.span,
@@ -1742,9 +1811,9 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 Ok(())
             }
             ExprKind::Index { object, index } => {
-                let obj = self.eval(object)?;
-                let key = self.eval(index)?;
-                let v = self.eval(value)?;
+                let obj = self.eval(object).await?;
+                let key = self.eval(index).await?;
+                let v = self.eval(value).await?;
                 if is_frozen(&obj) {
                     return Err(self.config_modified(target.span));
                 }
@@ -1807,14 +1876,27 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
 
     // ---------------------------------------------------------------- expressions
 
-    fn eval_bool(&mut self, cond: &Expr) -> Res<bool> {
-        match self.eval(cond)? {
+    /// Évalue des expressions dans l'ordre écrit.
+    async fn eval_all(&mut self, exprs: &[Expr]) -> Res<Vec<Value>> {
+        let mut values = Vec::with_capacity(exprs.len());
+        for e in exprs {
+            values.push(self.eval(e).await?);
+        }
+        Ok(values)
+    }
+
+    async fn eval_bool(&mut self, cond: &Expr) -> Res<bool> {
+        match self.eval(cond).await? {
             Value::Bool(b) => Ok(b),
             _ => Err(self.internal(cond.span, "condition non booléenne")),
         }
     }
 
-    fn eval(&mut self, expr: &Expr) -> Res<Value> {
+    fn eval<'s>(&'s mut self, expr: &'s Expr) -> BoxFut<'s, Res<Value>> {
+        Box::pin(self.eval_inner(expr))
+    }
+
+    async fn eval_inner(&mut self, expr: &Expr) -> Res<Value> {
         match &expr.kind {
             ExprKind::Int { text } => text
                 .parse()
@@ -1826,7 +1908,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 .map_err(|_| self.internal(expr.span, "décimal invalide")),
             ExprKind::Str { value } => Ok(Value::Str(value.as_str().into())),
             ExprKind::Bool { value } => Ok(Value::Bool(*value)),
-            ExprKind::Paren { expr } => self.eval(expr),
+            ExprKind::Paren { expr } => self.eval(expr).await,
             ExprKind::SelfRef => self
                 .find_local(SELF_LOCAL)
                 .cloned()
@@ -1862,7 +1944,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                     }
                     _ => {}
                 }
-                match self.eval(object)? {
+                match self.eval(object).await? {
                     Value::Struct(s) => {
                         let s = s.borrow();
                         let i = self.field_index(&s, field)?;
@@ -1872,8 +1954,8 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 }
             }
             ExprKind::Index { object, index } => {
-                let obj = self.eval(object)?;
-                let key = self.eval(index)?;
+                let obj = self.eval(object).await?;
+                let key = self.eval(index).await?;
                 match obj {
                     Value::Array(a) => {
                         let a = a.borrow();
@@ -1905,10 +1987,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 }
             }
             ExprKind::Array { items } => {
-                let values = items
-                    .iter()
-                    .map(|i| self.eval(i))
-                    .collect::<Res<Vec<_>>>()?;
+                let values = self.eval_all(items).await?;
                 Ok(Value::new_array(values))
             }
             ExprKind::StructLit { path, fields } => {
@@ -1920,7 +1999,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 // Les valeurs sont calculées dans l'ordre où elles sont écrites.
                 let mut given = Vec::with_capacity(fields.len());
                 for f in fields {
-                    given.push((f.name.name.as_str(), self.eval(&f.value)?));
+                    given.push((f.name.name.as_str(), self.eval(&f.value).await?));
                 }
                 let names = &self.p.types.structs[id].fields;
                 let mut values = Vec::with_capacity(names.len());
@@ -1935,17 +2014,17 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 ))))
             }
             ExprKind::Call { callee, args } => {
-                let job = self.prepare_call(callee, args)?;
+                let job = self.prepare_call(callee, args).await?;
                 let called_at = (self.frame().file, expr.span);
-                self.invoke(job, called_at)
+                self.invoke(job, called_at).await
             }
             ExprKind::Start { call } => {
                 let ExprKind::Call { callee, args } = &call.kind else {
                     return Err(self.internal(call.span, "`start` sans appel"));
                 };
-                let job = self.prepare_call(callee, args)?;
+                let job = self.prepare_call(callee, args).await?;
                 let called_at = (self.frame().file, expr.span);
-                self.spawn(job, called_at)
+                self.spawn(job, called_at).await
             }
             ExprKind::Listen { event, handler } => {
                 let Some(Entity::Func(func)) = self.resolve_path(handler) else {
@@ -1953,7 +2032,7 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                         self.internal(handler.span, "abonnement à autre chose qu'une fonction")
                     );
                 };
-                let w = self.wm();
+                let mut w = self.wm();
                 w.listeners.push(ListenerSlot {
                     event: path_text(event),
                     func,
@@ -1961,14 +2040,14 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                 });
                 Ok(Value::Listener(w.listeners.len() - 1))
             }
-            ExprKind::Await { expr: inner } => match self.eval(inner)? {
-                Value::Task(t) => self.await_task(t, expr.span),
+            ExprKind::Await { expr: inner } => match self.eval(inner).await? {
+                Value::Task(t) => self.await_task(t, expr.span).await,
                 _ => {
                     Err(self.internal(inner.span, "`await` sur une valeur qui n'est pas une tâche"))
                 }
             },
             ExprKind::Unary { op, expr: inner } => {
-                let v = self.eval(inner)?;
+                let v = self.eval(inner).await?;
                 match (op, v) {
                     (UnaryOp::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
                     (UnaryOp::Neg, Value::Float(f)) => Ok(Value::Float(-f)),
@@ -1979,9 +2058,9 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
                     _ => Err(self.internal(expr.span, "opérateur unaire impossible")),
                 }
             }
-            ExprKind::Binary { op, lhs, rhs } => self.eval_binary(*op, lhs, rhs, expr.span),
+            ExprKind::Binary { op, lhs, rhs } => self.eval_binary(*op, lhs, rhs, expr.span).await,
             ExprKind::Is { expr: inner, ty } => {
-                let v = self.eval(inner)?;
+                let v = self.eval(inner).await?;
                 let kind = self.kind_of(ty)?;
                 Ok(Value::Bool(value_is(&v, &kind)))
             }
@@ -2025,18 +2104,24 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
         )
     }
 
-    fn eval_binary(&mut self, op: BinaryOp, lhs: &Expr, rhs: &Expr, span: Span) -> Res<Value> {
+    async fn eval_binary(
+        &mut self,
+        op: BinaryOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        span: Span,
+    ) -> Res<Value> {
         use BinaryOp::*;
         // `&&` et `||` n'évaluent leur droite que si nécessaire.
         if matches!(op, And | Or) {
-            let l = self.eval_bool(lhs)?;
+            let l = self.eval_bool(lhs).await?;
             if (op == And && !l) || (op == Or && l) {
                 return Ok(Value::Bool(l));
             }
-            return self.eval_bool(rhs).map(Value::Bool);
+            return self.eval_bool(rhs).await.map(Value::Bool);
         }
-        let l = self.eval(lhs)?;
-        let r = self.eval(rhs)?;
+        let l = self.eval(lhs).await?;
+        let r = self.eval(rhs).await?;
         let symbol = match op {
             Eq => return Ok(Value::Bool(equal(&l, &r))),
             NotEq => return Ok(Value::Bool(!equal(&l, &r))),

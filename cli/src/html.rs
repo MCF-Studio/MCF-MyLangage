@@ -148,7 +148,8 @@ fn node(n: &Node, parent_stack: Option<bool>, out: &mut String) {
             } else {
                 ("div", "mcf-box")
             };
-            let stack = matches!(n.style.get(&Style::Layout), Some(StyleValue::Word(w)) if w == "stack");
+            let stack =
+                matches!(n.style.get(&Style::Layout), Some(StyleValue::Word(w)) if w == "stack");
             let _ = write!(out, "<{tag} class=\"{class}\"{style_attr}>");
             for c in &n.children {
                 node(c, Some(stack), out);
