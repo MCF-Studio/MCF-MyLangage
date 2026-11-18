@@ -3,6 +3,9 @@
 //! Codes de sortie : 0 = aucun problème, 1 = erreurs détectées, 2 = usage ou E/S,
 //! 3 = erreur pendant l'exécution (`mcf run`).
 
+mod html;
+mod view_cmd;
+
 use mcf_diagnostics::{codes, SourceFile};
 use mcf_semantic::{check_project, Source};
 use serde_json::json;
@@ -16,6 +19,8 @@ Usage :
   mcf check <fichier|dossier> [--format text|json] [--strict] [--no-hints]
              (vérifie les .mcf, les interfaces .uimcf et les configurations .cfg)
   mcf run <fichier|dossier> [--strict] [--no-hints]
+  mcf view <dossier> [--component Nom] [--out page.html] [--format json]
+             (calcule la vue d'un composant .uimcf : page HTML d'aperçu, ou JSON)
   mcf describe errors|keywords [--format text|json]
   mcf version
 
@@ -36,6 +41,8 @@ struct Options {
     format: Format,
     strict: bool,
     hints: bool,
+    component: Option<String>,
+    out: Option<String>,
 }
 
 fn parse_options(args: &[String]) -> Result<Options, String> {
@@ -44,12 +51,18 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
         format: Format::Text,
         strict: false,
         hints: true,
+        component: None,
+        out: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--strict" => opts.strict = true,
             "--no-hints" => opts.hints = false,
+            "--component" => {
+                opts.component = Some(it.next().ok_or("--component demande un nom")?.clone())
+            }
+            "--out" => opts.out = Some(it.next().ok_or("--out demande un chemin")?.clone()),
             "--format" => {
                 opts.format = match it.next().map(String::as_str) {
                     Some("text") => Format::Text,
@@ -80,6 +93,7 @@ fn main() -> ExitCode {
     match command.as_str() {
         "check" => check(&opts),
         "run" => run(&opts),
+        "view" => view_cmd::view(&opts),
         "describe" => describe(&opts),
         "version" | "--version" | "-V" => {
             println!("mcf {}", env!("CARGO_PKG_VERSION"));

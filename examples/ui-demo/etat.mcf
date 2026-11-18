@@ -1,0 +1,13 @@
+// État du jeu affiché par l'interface.
+clics: Int = 3;
+joueur: String = "Aroun";
+argent: Int = 1250;
+inventaire: Array<String> = ["Clé du garage", "Téléphone", "Sandwich", "Carte bancaire"];
+
+func ajouter(): Void {
+    clics = clics + 1;
+}
+
+func main(): Void {
+    print("démo interface");
+}

@@ -14,6 +14,9 @@
 
 mod config;
 mod value;
+mod view;
+
+pub use view::render_view;
 
 pub use value::{deep_copy, equal, StructValue, Value};
 
@@ -707,20 +710,9 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             .expect("la tâche courante détient le verrou")
     }
 
-    fn start(&mut self) -> Res<()> {
+    /// Initialise les globales : configurations d'abord, puis variables dans l'ordre.
+    fn init_globals(&mut self) -> Res<()> {
         let p = self.p;
-        let Some(main) = p.entry_point() else {
-            return Err(Stop::Error(Box::new(RuntimeError {
-                file: None,
-                diagnostic: Diagnostic::new(
-                    &codes::MISSING_ENTRY_POINT,
-                    Span::new(0, 0),
-                    "le projet n'a pas de point d'entrée `main`",
-                )
-                .suggestion("ajouter `func main(): Void { ... }` à la racine d'un fichier"),
-                trace: Vec::new(),
-            })));
-        };
         // Les configurations d'abord : une globale peut être calculée à partir d'elles.
         for (slot, g) in p.globals.iter().enumerate() {
             let GlobalInit::Config(c) = g.init else {
@@ -755,6 +747,24 @@ impl<'scope, 'env, 'o, 'a, W: Write + Send> Interp<'scope, 'env, 'o, 'a, W> {
             self.wm().globals[slot] = value;
             self.calls.pop();
         }
+        Ok(())
+    }
+
+    fn start(&mut self) -> Res<()> {
+        let p = self.p;
+        let Some(main) = p.entry_point() else {
+            return Err(Stop::Error(Box::new(RuntimeError {
+                file: None,
+                diagnostic: Diagnostic::new(
+                    &codes::MISSING_ENTRY_POINT,
+                    Span::new(0, 0),
+                    "le projet n'a pas de point d'entrée `main`",
+                )
+                .suggestion("ajouter `func main(): Void { ... }` à la racine d'un fichier"),
+                trace: Vec::new(),
+            })));
+        };
+        self.init_globals()?;
         self.call_func(main, None, Vec::new(), None)?;
         // Le programme se termine quand toutes les tâches lancées sont terminées.
         let mut t = 1;

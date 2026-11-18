@@ -16,6 +16,7 @@ dependencies = [
  "mcf-runtime",
  "mcf-semantic",
  "mcf-syntax",
+ "mcf-view",
  "serde_json",
 ]
 
@@ -42,6 +43,7 @@ dependencies = [
  "mcf-diagnostics",
  "mcf-semantic",
  "mcf-syntax",
+ "mcf-view",
 ]
 
 [[package]]

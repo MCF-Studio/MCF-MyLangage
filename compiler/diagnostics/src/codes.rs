@@ -120,6 +120,10 @@ codes! {
     TASK_START_FAILED = "MCF0412", Runtime, Error, "Le système refuse de démarrer une nouvelle tâche.";
     CONFIG_LOAD_FAILED = "MCF0413", Runtime, Error, "Fichier de configuration illisible ou non conforme au démarrage ou dans `loadConfig`.";
     CONFIG_MODIFIED = "MCF0414", Runtime, Error, "Modification d'une valeur venue d'une déclaration `config` (lecture seule).";
+    INVALID_VIEW_COLOR = "MCF0415", Runtime, Error, "Couleur calculée d'une interface qui n'est pas de la forme `#rgb`, `#rgba`, `#rrggbb` ou `#rrggbbaa`.";
+    VIEW_TOO_LARGE = "MCF0416", Runtime, Error, "Vue de plus de 10 000 éléments.";
+    VIEW_VALUE_OUT_OF_RANGE = "MCF0417", Runtime, Error, "Valeur de style calculée d'une interface hors de sa plage (poids 100 à 900, opacité 0 à 1, `grow` positif).";
+    UNKNOWN_VIEW_COMPONENT = "MCF0418", Runtime, Error, "Composant `ui` demandé à l'affichage introuvable, ou dont une `prop` obligatoire n'a pas de valeur.";
     INTERNAL_RUNTIME_ERROR = "MCF0499", Runtime, Error, "Erreur interne de l'interpréteur (à signaler).";
 
     LOOP_WITHOUT_PAUSE_IN_TASK = "MCF0500", Advice, Hint, "Boucle sans pause dans une fonction lancée en tâche : les autres tâches attendent qu'elle finisse.";

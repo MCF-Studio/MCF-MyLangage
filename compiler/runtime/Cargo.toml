@@ -13,6 +13,7 @@ repository.workspace = true
 mcf-diagnostics.workspace = true
 mcf-syntax.workspace = true
 mcf-config.workspace = true
+mcf-view.workspace = true
 
 [dev-dependencies]
 mcf-semantic.workspace = true

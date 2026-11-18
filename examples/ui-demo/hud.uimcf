@@ -1,0 +1,63 @@
+import clics;
+import joueur;
+import argent;
+import inventaire;
+import ajouter;
+
+style titre {
+    fontSize: 22;
+    fontWeight: 700;
+    color: #cba6f7;
+}
+
+style pastille {
+    background: #313244;
+    radius: 12;
+    padding: 6;
+    paddingLeft: 12;
+    paddingRight: 12;
+    fontSize: 14;
+}
+
+ui Ligne {
+    prop nom: String = "objet";
+
+    view {
+        Box(layout: row, align: center, gap: 8, padding: 8, background: #181825, radius: 6) {
+            Box(width: 8, height: 8, radius: 4, background: #a6e3a1);
+            Text(nom);
+        }
+    }
+}
+
+ui Hud {
+    state ouvert: Bool = true;
+
+    view {
+        Window(title: "HUD", padding: 24, gap: 16, background: #11111b) {
+            Box(layout: row, justify: between, align: center) {
+                Text("MCF Studio RP", style: titre);
+                Box(layout: row, gap: 8) {
+                    Text(joueur, style: pastille);
+                    Text(argent + " €", style: pastille, color: #f9e2af);
+                }
+            }
+            Box(background: #1e1e2e, radius: 10, padding: 16, gap: 10, maxWidth: 420) {
+                Text("Inventaire (" + inventaire.length() + ")", fontWeight: 600);
+                if (ouvert) then {
+                    foreach (_objet in inventaire) do {
+                        Ligne(nom: _objet);
+                    }
+                } else {
+                    Text("Replié.", color: #9399b2);
+                }
+                Input(placeholder: "Rechercher…", width: 100%);
+            }
+            Box(layout: row, gap: 8) {
+                Button("+1", onClick: ajouter);
+                Button("Replier", onClick: ouvert = !ouvert);
+                Text("Clics : " + clics, color: #9399b2);
+            }
+        }
+    }
+}

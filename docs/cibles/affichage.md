@@ -1,6 +1,6 @@
 # Couche d'affichage commune (phase 11) — web et MCF Engine
 
-**Statut :** D68 proposée, implémentée dans la crate `mcf-view` (`compiler/view`). Le calcul de l'arbre depuis une vue `.uimcf` (runtime) et les ponts vers le DOM ou `bevy_ui` ne sont pas encore écrits.
+**Statut :** D68 proposée, implémentée dans la crate `mcf-view` (`compiler/view`). Le calcul d'un **instantané** de l'arbre (valeurs initiales, sans événement ni session ; `mcf_runtime::render_view`, commande `mcf view` qui l'exporte en page HTML d'aperçu) est fait ; le calcul vivant (événements, `state`, recalcul : D69) et les ponts vers le DOM ou `bevy_ui` ne sont pas encore écrits.
 
 Le runtime ne sait rien de l'écran. À chaque recalcul de la vue racine (D60), il produit un **arbre de vue** (`Node`) ; `Renderer::update` le compare au précédent et rend une **liste de changements** (`Change`). Chaque cible applique ces changements à son affichage :
 
