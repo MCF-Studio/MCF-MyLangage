@@ -390,6 +390,20 @@ impl Node {
     pub fn count(&self) -> usize {
         1 + self.children.iter().map(Node::count).sum::<usize>()
     }
+
+    /// Rang de l'élément désigné par `path` (indices d'enfants depuis cet élément) dans le
+    /// parcours « parent avant enfants » ; `None` si le chemin sort de l'arbre. Le runtime
+    /// numérote ses éléments dans cet ordre : c'est ainsi qu'un événement retrouve son action.
+    pub fn preorder_index(&self, path: &[usize]) -> Option<usize> {
+        let mut index = 0;
+        let mut node = self;
+        for &i in path {
+            let target = node.children.get(i)?;
+            index += 1 + node.children[..i].iter().map(Node::count).sum::<usize>();
+            node = target;
+        }
+        Some(index)
+    }
 }
 
 /// Identifiant d'un élément affiché, attribué à sa création, jamais réutilisé.

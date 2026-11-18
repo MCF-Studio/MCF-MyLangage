@@ -77,6 +77,25 @@ pub fn view(opts: &Options) -> ExitCode {
                 .unwrap_or_default()
         })
         .collect();
+    if opts.serve {
+        let stubs = mcf_runtime::ui_stub_modules(&ui_modules);
+        let all: Vec<_> = modules.iter().copied().chain(stubs.iter()).collect();
+        let mut session =
+            mcf_runtime::ViewSession::new(&all, &ui_modules, &ordered, &dirs, &root, &component);
+        // Le premier calcul signale tout de suite une erreur de vue, avant d'ouvrir le serveur.
+        if let Err(err) = session.view() {
+            let d = &err.diagnostic;
+            eprintln!("erreur[{}] {}: {}", d.code.id, d.code.name, d.message);
+            return ExitCode::from(3);
+        }
+        return match crate::serve::serve(&mut session, &component, opts.port) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("mcf view : serveur impossible : {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
     let node =
         match mcf_runtime::render_view(&modules, &ui_modules, &ordered, &dirs, &root, &component) {
             Ok(n) => n,

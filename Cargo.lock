@@ -17,6 +17,7 @@ dependencies = [
  "mcf-semantic",
  "mcf-syntax",
  "mcf-view",
+ "serde",
  "serde_json",
 ]
 

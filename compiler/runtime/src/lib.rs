@@ -16,7 +16,7 @@ mod config;
 mod value;
 mod view;
 
-pub use view::render_view;
+pub use view::{render_view, ui_stub_modules, ViewSession};
 
 pub use value::{deep_copy, equal, StructValue, Value};
 

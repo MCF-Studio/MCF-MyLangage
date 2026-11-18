@@ -1,14 +1,18 @@
-//! Calcul d'un instantané de vue (phase 11) : un composant `ui` devient un arbre [`Node`].
+//! Interfaces `.uimcf` vivantes (phase 11) : un composant `ui` devient un arbre [`Node`], et les
+//! événements de l'affichage (clic, saisie) déclenchent les actions du `.uimcf`.
 //!
-//! Cette première étape évalue la vue **une fois**, avec les valeurs initiales des globales, des
-//! `prop` (valeur par défaut) et des `state` (valeur initiale). Elle ne garde aucune session
-//! ouverte et ne traite aucun événement : le modèle d'exécution d'une interface vivante (D69)
-//! reste à trancher. Les actions (`onClick: f`) ne sont pas exécutées : l'arbre dit seulement
-//! quels événements sont écoutés.
+//! [`ViewSession`] garde entre deux événements les globales, les `state` des composants et les
+//! abonnements `on X => f`. Chaque événement s'exécute **jusqu'au bout** (tâches lancées
+//! comprises), puis la vue est recalculée en entier ; [`mcf_view::Renderer`] en déduit les
+//! changements d'affichage. C'est un modèle **provisoire** : le choix définitif (D69) reste à
+//! faire, et un événement qui dort (`sleep`) fige l'interface le temps qu'il dure.
 //!
-//! Une vue n'a pas d'effet : rien ici n'écrit dans les globales ni ne lance de tâche. Les
+//! Une vue n'a pas d'effet : rien ici n'écrit dans les globales pendant le calcul de la vue. Les
 //! appels de fonctions `.mcf` dans une expression restent permis (D55), la vérification des
 //! effets de bord viendra avec D56.
+//!
+//! Identité (D61) : un composant est identifié par sa position (parent, nom, rang d'utilisation) ;
+//! son `state` suit cette identité d'un calcul à l'autre.
 
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
@@ -19,6 +23,16 @@ use mcf_syntax::ast::*;
 use mcf_view::{Color, Event, Kind, Length, Node, Prop, Style, StyleValue, MAX_NODES};
 
 use super::*;
+
+/// Fichiers « sans code » qui portent les imports des `.uimcf` : à ajouter après les modules
+/// `.mcf` pour que les imports d'une interface se résolvent comme ceux d'un `.mcf`.
+pub fn ui_stub_modules(ui: &[&UiModule]) -> Vec<Module> {
+    ui.iter()
+        .map(|u| Module {
+            items: u.imports.iter().cloned().map(Item::Import).collect(),
+        })
+        .collect()
+}
 
 /// Calcule la vue du composant `component` (valeurs initiales, sans événement).
 ///
@@ -31,19 +45,10 @@ pub fn render_view(
     root: &FsPath,
     component: &str,
 ) -> Result<Node, Box<RuntimeError>> {
-    std::thread::scope(|s| {
-        std::thread::Builder::new()
-            .name("mcf-view".into())
-            .stack_size(STACK_SIZE)
-            .spawn_scoped(s, || render_here(modules, ui, files, dirs, root, component))
-            .map_err(|e| failure(&format!("impossible de démarrer le calcul de la vue : {e}")))?
-            .join()
-            .unwrap_or_else(|_| {
-                Err(failure(
-                    "le calcul de la vue s'est arrêté de façon inattendue",
-                ))
-            })
-    })
+    let stubs = ui_stub_modules(ui);
+    let all: Vec<&Module> = modules.iter().copied().chain(stubs.iter()).collect();
+    let mut session = ViewSession::new(&all, ui, files, dirs, root, component);
+    session.view()
 }
 
 #[derive(Clone, Copy)]
@@ -53,7 +58,29 @@ struct Component<'v> {
     file: usize,
 }
 
-/// Ce que le calcul de la vue a besoin de savoir, hors de l'interpréteur.
+#[derive(Clone)]
+enum ActionKind<'v> {
+    /// `bind value: x` : la saisie devient la valeur du `state` `x`.
+    Bind(&'v str),
+    /// Valeur d'un `onClick`… : appel, affectation d'un `state` ou `emit`.
+    Run(&'v UiValue),
+}
+
+/// Action d'un élément, avec de quoi la rejouer plus tard : variables visibles au moment du
+/// calcul de la vue (`prop`, `state`, variable de `foreach`) et composant d'origine.
+#[derive(Clone)]
+struct Action<'v> {
+    /// Rang de l'élément dans l'arbre (parcours parent avant enfants).
+    index: usize,
+    event: Event,
+    kind: ActionKind<'v>,
+    blocks: Vec<Locals>,
+    file: usize,
+    table: usize,
+    instance: String,
+}
+
+/// Ce que le calcul de la vue garde d'un calcul à l'autre.
 struct ViewCx<'v> {
     components: HashMap<&'v str, Component<'v>>,
     ui: &'v [&'v UiModule],
@@ -61,80 +88,217 @@ struct ViewCx<'v> {
     offset: usize,
     /// Composants en cours de calcul (le dernier est le courant).
     current: Vec<&'v UiDecl>,
+    /// Instances en cours : identité par position et compteur d'utilisations de composants.
+    instances: Vec<(String, usize)>,
+    /// `state` de tous les composants affichés, par « instance/nom ».
+    states: HashMap<String, Value>,
+    actions: Vec<Action<'v>>,
     count: usize,
+    /// Plusieurs éléments à la racine : un `Box` a été ajouté devant.
+    wrapped: bool,
 }
 
-fn render_here(
-    modules: &[&Module],
-    ui: &[&UiModule],
-    files: &[SourceFile],
-    dirs: &[PathBuf],
-    root: &FsPath,
-    component: &str,
-) -> Result<Node, Box<RuntimeError>> {
-    // Un fichier `.uimcf` est vu comme un fichier sans code qui n'a que ses imports : ils se
-    // résolvent comme ceux d'un `.mcf`.
-    let pseudo: Vec<Module> = ui
-        .iter()
-        .map(|u| Module {
-            items: u.imports.iter().cloned().map(Item::Import).collect(),
-        })
-        .collect();
-    let all: Vec<&Module> = modules.iter().copied().chain(pseudo.iter()).collect();
-    let mut program = Program::build(&all, files, dirs);
-    program.root = root.to_path_buf();
-    let mut sink = std::io::sink();
-    let shared = Shared {
-        world: Mutex::new(World {
-            out: &mut sink,
+impl ViewCx<'_> {
+    fn instance(&self) -> &str {
+        self.instances.last().map_or("", |(k, _)| k.as_str())
+    }
+
+    fn state_key(&self, name: &str) -> String {
+        format!("{}/{name}", self.instance())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Op<'x> {
+    Render,
+    Event {
+        index: usize,
+        event: Event,
+        text: Option<&'x str>,
+    },
+}
+
+enum OpOut {
+    Tree(Node),
+    Handled(bool),
+}
+
+/// Interface vivante : garde les globales, les `state` et les abonnements entre deux
+/// événements (voir l'en-tête du module pour le modèle d'exécution).
+pub struct ViewSession<'a> {
+    program: Program<'a>,
+    cx: ViewCx<'a>,
+    globals: Vec<Option<Value>>,
+    listeners: Vec<ListenerSlot>,
+    initialized: bool,
+    component: String,
+    out: Vec<u8>,
+    tree: Option<Node>,
+}
+
+impl<'a> ViewSession<'a> {
+    /// `modules` : les `.mcf` puis les modules de [`ui_stub_modules`] (un par `.uimcf`) ;
+    /// `files` et `dirs` dans le même ordre.
+    pub fn new(
+        modules: &[&'a Module],
+        ui: &'a [&'a UiModule],
+        files: &'a [SourceFile],
+        dirs: &'a [PathBuf],
+        root: &FsPath,
+        component: &str,
+    ) -> Self {
+        let mut program = Program::build(modules, files, dirs);
+        program.root = root.to_path_buf();
+        let offset = modules.len() - ui.len();
+        let mut cx = ViewCx {
+            components: HashMap::new(),
+            ui,
+            offset,
+            current: Vec::new(),
+            instances: Vec::new(),
+            states: HashMap::new(),
+            actions: Vec::new(),
+            count: 0,
+            wrapped: false,
+        };
+        for (i, u) in ui.iter().enumerate() {
+            for decl in &u.components {
+                cx.components.insert(
+                    decl.name.name.as_str(),
+                    Component {
+                        decl,
+                        file: offset + i,
+                    },
+                );
+            }
+        }
+        ViewSession {
             globals: vec![None; program.globals.len()],
-            tasks: vec![TaskSlot::new()],
-            current: 0,
-            ready: VecDeque::new(),
-            timers: BTreeMap::new(),
-            seq: 0,
-            clock: 0,
-            failure: None,
-            aborted: false,
+            program,
+            cx,
             listeners: Vec::new(),
-        }),
-    };
-    let offset = modules.len();
-    let mut cx = ViewCx {
-        components: HashMap::new(),
-        ui,
-        offset,
-        current: Vec::new(),
-        count: 0,
-    };
-    for (i, u) in ui.iter().enumerate() {
-        for decl in &u.components {
-            cx.components.insert(
-                decl.name.name.as_str(),
-                Component {
-                    decl,
-                    file: offset + i,
-                },
-            );
+            initialized: false,
+            component: component.to_string(),
+            out: Vec::new(),
+            tree: None,
         }
     }
-    let outcome = std::thread::scope(|scope| {
-        let mut it = Interp {
-            calls: Vec::new(),
-            guard: Some(shared.lock()),
-            p: &program,
-            shared: &shared,
-            scope,
-            id: 0,
+
+    /// Calcule la vue avec l'état actuel.
+    pub fn view(&mut self) -> Result<Node, Box<RuntimeError>> {
+        match self.run_op(Op::Render)? {
+            OpOut::Tree(node) => {
+                self.tree = Some(node.clone());
+                Ok(node)
+            }
+            OpOut::Handled(_) => Err(failure("calcul de la vue : résultat inattendu")),
+        }
+    }
+
+    /// Traite un événement de l'élément désigné par `path` (indices d'enfants depuis la racine
+    /// de la dernière vue calculée). `text` : saisie d'un `Input`. Rend `false` si l'élément
+    /// n'écoute pas cet événement. Rappeler [`ViewSession::view`] ensuite.
+    pub fn dispatch(
+        &mut self,
+        path: &[usize],
+        event: Event,
+        text: Option<&str>,
+    ) -> Result<bool, Box<RuntimeError>> {
+        let Some(tree) = &self.tree else {
+            return Ok(false);
         };
-        let result = it.snapshot(&mut cx, component);
-        drop(it.guard.take());
-        result
-    });
-    match outcome {
-        Ok(node) => Ok(node),
-        Err(Stop::Error(e)) => Err(e),
-        Err(_) => Err(failure("le calcul de la vue a été interrompu")),
+        let Some(rank) = tree.preorder_index(path) else {
+            return Ok(false);
+        };
+        // L'éventuel `Box` de la racine n'a pas été créé par une vue : il n'a pas d'action.
+        let Some(index) = rank.checked_sub(usize::from(self.cx.wrapped)) else {
+            return Ok(false);
+        };
+        match self.run_op(Op::Event { index, event, text })? {
+            OpOut::Handled(h) => Ok(h),
+            OpOut::Tree(_) => Err(failure("événement : résultat inattendu")),
+        }
+    }
+
+    /// Ce que `print` a écrit depuis le dernier appel.
+    pub fn take_output(&mut self) -> String {
+        String::from_utf8_lossy(&std::mem::take(&mut self.out)).into_owned()
+    }
+
+    fn run_op(&mut self, op: Op<'_>) -> Result<OpOut, Box<RuntimeError>> {
+        let ViewSession {
+            program,
+            cx,
+            globals,
+            listeners,
+            initialized,
+            component,
+            out,
+            ..
+        } = self;
+        let program = &*program;
+        std::thread::scope(|s| {
+            std::thread::Builder::new()
+                .name("mcf-view".into())
+                .stack_size(STACK_SIZE)
+                .spawn_scoped(s, || {
+                    let shared = Shared {
+                        world: Mutex::new(World {
+                            out: &mut *out,
+                            globals: std::mem::take(globals),
+                            tasks: vec![TaskSlot::new()],
+                            current: 0,
+                            ready: VecDeque::new(),
+                            timers: BTreeMap::new(),
+                            seq: 0,
+                            clock: 0,
+                            failure: None,
+                            aborted: false,
+                            listeners: std::mem::take(listeners),
+                        }),
+                    };
+                    let result = std::thread::scope(|scope| {
+                        let mut it = Interp {
+                            calls: Vec::new(),
+                            guard: Some(shared.lock()),
+                            p: program,
+                            shared: &shared,
+                            scope,
+                            id: 0,
+                        };
+                        let mut r = it.step(cx, initialized, component, op);
+                        if r.is_ok() && matches!(op, Op::Event { .. }) {
+                            // Les tâches lancées par l'événement vont jusqu'au bout.
+                            let mut t = 1;
+                            while t < it.w().tasks.len() {
+                                if let Err(e) = it.wait_for(t, None) {
+                                    r = Err(e);
+                                    break;
+                                }
+                                t += 1;
+                            }
+                        }
+                        it.end_task(match &r {
+                            Ok(_) => Ok(Value::Void),
+                            Err(_) => Err(Stop::Abort),
+                        });
+                        r
+                    });
+                    let mut w = shared.lock();
+                    *globals = std::mem::take(&mut w.globals);
+                    *listeners = std::mem::take(&mut w.listeners);
+                    let failed = w.failure.take();
+                    drop(w);
+                    match (result, failed) {
+                        (Err(Stop::Error(e)), _) | (Ok(_), Some(e)) | (Err(_), Some(e)) => Err(e),
+                        (Err(_), None) => Err(failure("le traitement a été interrompu")),
+                        (Ok(v), None) => Ok(v),
+                    }
+                })
+                .map_err(|e| failure(&format!("impossible de démarrer le calcul : {e}")))?
+                .join()
+                .unwrap_or_else(|_| Err(failure("le calcul s'est arrêté de façon inattendue")))
+        })
     }
 }
 
@@ -150,8 +314,38 @@ fn main_prop(kind: Kind) -> Option<Prop> {
 }
 
 impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
-    fn snapshot<'v>(&mut self, cx: &mut ViewCx<'v>, name: &str) -> Res<Node> {
-        self.init_globals()?;
+    /// Une opération de la session, avec le verrou de l'état partagé déjà pris.
+    fn step<'v>(
+        &mut self,
+        cx: &mut ViewCx<'v>,
+        initialized: &mut bool,
+        component: &str,
+        op: Op<'_>,
+    ) -> Res<OpOut> {
+        if !*initialized {
+            self.init_globals()?;
+            *initialized = true;
+        }
+        match op {
+            Op::Render => self.render(cx, component).map(OpOut::Tree),
+            Op::Event { index, event, text } => {
+                let mut found: Vec<Action<'v>> = cx
+                    .actions
+                    .iter()
+                    .filter(|a| a.index == index && a.event == event)
+                    .cloned()
+                    .collect();
+                // La liaison met à jour le `state` avant que `onChange` ne le lise.
+                found.sort_by_key(|a| !matches!(a.kind, ActionKind::Bind(_)));
+                for a in &found {
+                    self.run_action(cx, a, text)?;
+                }
+                Ok(OpOut::Handled(!found.is_empty()))
+            }
+        }
+    }
+
+    fn render<'v>(&mut self, cx: &mut ViewCx<'v>, name: &str) -> Res<Node> {
         let Some(&Component { decl, file }) = cx.components.get(name) else {
             let mut names: Vec<&str> = cx.components.keys().copied().collect();
             names.sort_unstable();
@@ -168,19 +362,83 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                 }),
             ));
         };
-        let mut nodes = self.component_nodes(cx, decl, file, Vec::new())?;
-        if nodes.len() == 1 {
-            Ok(nodes.remove(0))
-        } else {
+        cx.count = 0;
+        cx.actions.clear();
+        cx.instances.clear();
+        cx.instances.push(("racine".to_string(), 0));
+        let nodes = self.component_nodes(cx, decl, file, Vec::new());
+        cx.instances.clear();
+        let mut nodes = nodes?;
+        cx.wrapped = nodes.len() != 1;
+        if cx.wrapped {
             // Plusieurs éléments à la racine : un `Box` les réunit pour l'affichage.
             let mut root = Node::new(Kind::Box);
             root.children = nodes;
             Ok(root)
+        } else {
+            Ok(nodes.remove(0))
         }
     }
 
+    /// Exécute l'action d'un élément avec les variables vues au moment du calcul de la vue.
+    fn run_action<'v>(
+        &mut self,
+        cx: &mut ViewCx<'v>,
+        a: &Action<'v>,
+        text: Option<&str>,
+    ) -> Res<()> {
+        self.calls.push(CallFrame {
+            name: "action d'interface".to_string(),
+            file: a.file,
+            table: a.table,
+            called_at: None,
+            blocks: a.blocks.clone(),
+        });
+        let r = self.action_body(cx, a, text);
+        self.calls.pop();
+        r
+    }
+
+    fn action_body<'v>(
+        &mut self,
+        cx: &mut ViewCx<'v>,
+        a: &Action<'v>,
+        text: Option<&str>,
+    ) -> Res<()> {
+        let key = |name: &str| format!("{}/{name}", a.instance);
+        match &a.kind {
+            ActionKind::Bind(name) => {
+                let value = Value::Str(text.unwrap_or("").into());
+                cx.states.insert(key(name), value);
+            }
+            ActionKind::Run(UiValue::Expr(e)) => {
+                // `onClick: f` désigne une fonction sans argument ; `f(x)` est un appel.
+                if let Some(Entity::Func(id)) = self.entity_of(e) {
+                    self.call_func(id, None, Vec::new(), None)?;
+                } else {
+                    self.eval(e)?;
+                }
+            }
+            ActionKind::Run(UiValue::Assign { target, value, .. }) => {
+                let v = self.eval(value)?;
+                match &target.kind {
+                    ExprKind::Name { ident } => {
+                        cx.states.insert(key(&ident.name), v);
+                    }
+                    _ => return Err(self.internal(target.span, "cible d'affectation inconnue")),
+                }
+            }
+            ActionKind::Run(UiValue::Emit { event, args, span }) => {
+                let values = args.iter().map(|x| self.eval(x)).collect::<Res<Vec<_>>>()?;
+                self.emit(event, values, &[], false, *span)?;
+            }
+            ActionKind::Run(_) => {}
+        }
+        Ok(())
+    }
+
     /// Calcule la vue d'un composant avec les valeurs de `prop` données (les autres prennent
-    /// leur valeur par défaut) et l'état initial.
+    /// leur valeur par défaut) ; ses `state` gardent leur valeur d'un calcul à l'autre.
     fn component_nodes<'v>(
         &mut self,
         cx: &mut ViewCx<'v>,
@@ -214,24 +472,39 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         args: Vec<(String, Value)>,
     ) -> Res<Vec<Node>> {
         for m in &decl.members {
-            let given = args
-                .iter()
-                .find(|(n, _)| *n == m.name.name)
-                .map(|(_, v)| v.clone());
-            let value = match (given, &m.init) {
-                (Some(v), _) => v,
-                (None, Some(init)) => self.eval(init)?,
-                (None, None) => {
-                    return Err(self.error_with(
-                        Diagnostic::new(
-                            &codes::UNKNOWN_VIEW_COMPONENT,
-                            m.span,
-                            format!("la `prop` `{}` n'a pas de valeur", m.name.name),
-                        )
-                        .suggestion(
-                            "lui donner une valeur par défaut pour afficher le composant seul",
-                        ),
-                    ));
+            let value = if m.kind == UiMemberKind::State {
+                let key = cx.state_key(&m.name.name);
+                match cx.states.get(&key) {
+                    Some(v) => v.clone(),
+                    None => {
+                        let v = match &m.init {
+                            Some(init) => self.eval(init)?,
+                            None => return Err(self.internal(m.span, "`state` sans valeur")),
+                        };
+                        cx.states.insert(key, v.clone());
+                        v
+                    }
+                }
+            } else {
+                let given = args
+                    .iter()
+                    .find(|(n, _)| *n == m.name.name)
+                    .map(|(_, v)| v.clone());
+                match (given, &m.init) {
+                    (Some(v), _) => v,
+                    (None, Some(init)) => self.eval(init)?,
+                    (None, None) => {
+                        return Err(self.error_with(
+                            Diagnostic::new(
+                                &codes::UNKNOWN_VIEW_COMPONENT,
+                                m.span,
+                                format!("la `prop` `{}` n'a pas de valeur", m.name.name),
+                            )
+                            .suggestion(
+                                "lui donner une valeur par défaut pour afficher le composant seul",
+                            ),
+                        ));
+                    }
                 }
             };
             self.declare_local(&m.name.name, Some(value));
@@ -245,7 +518,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         nodes
     }
 
-    fn view_nodes<'v>(&mut self, cx: &mut ViewCx<'v>, nodes: &[ViewNode]) -> Res<Vec<Node>> {
+    fn view_nodes<'v>(&mut self, cx: &mut ViewCx<'v>, nodes: &'v [ViewNode]) -> Res<Vec<Node>> {
         let mut out = Vec::new();
         for n in nodes {
             match n {
@@ -279,7 +552,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         Ok(out)
     }
 
-    fn scoped<'v>(&mut self, cx: &mut ViewCx<'v>, nodes: &[ViewNode]) -> Res<Vec<Node>> {
+    fn scoped<'v>(&mut self, cx: &mut ViewCx<'v>, nodes: &'v [ViewNode]) -> Res<Vec<Node>> {
         self.push_block();
         let r = self.view_nodes(cx, nodes);
         self.pop_block();
@@ -303,10 +576,25 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         Ok(display(&v, &self.p.types))
     }
 
-    fn element<'v>(&mut self, cx: &mut ViewCx<'v>, el: &Element) -> Res<Vec<Node>> {
+    fn record<'v>(&self, cx: &mut ViewCx<'v>, index: usize, event: Event, kind: ActionKind<'v>) {
+        let frame = self.frame();
+        cx.actions.push(Action {
+            index,
+            event,
+            kind,
+            blocks: frame.blocks.clone(),
+            file: frame.file,
+            table: frame.table,
+            instance: cx.instance().to_string(),
+        });
+    }
+
+    fn element<'v>(&mut self, cx: &mut ViewCx<'v>, el: &'v Element) -> Res<Vec<Node>> {
         let Some(kind) = Kind::from_name(&el.name.name) else {
             return self.use_component(cx, el);
         };
+        // Rang de l'élément : parent avant enfants, comme `Node::preorder_index`.
+        let index = cx.count;
         cx.count += 1;
         if cx.count > MAX_NODES {
             return Err(self.error(
@@ -336,12 +624,16 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
             }
             if let Some(event) = Event::from_name(name) {
                 node.events.insert(event);
+                self.record(cx, index, event, ActionKind::Run(&p.value));
             } else if let Some(prop) = Prop::from_name(name) {
                 if let UiValue::Expr(e) = &p.value {
                     node.props.insert(prop, self.text_of(e)?);
-                }
-                if p.bind {
-                    node.events.insert(Event::Change);
+                    if p.bind {
+                        if let ExprKind::Name { ident } = &e.kind {
+                            node.events.insert(Event::Change);
+                            self.record(cx, index, Event::Change, ActionKind::Bind(&ident.name));
+                        }
+                    }
                 }
             } else if let Some(style) = Style::from_name(name) {
                 let value = self.style_value(style, &p.value)?;
@@ -354,7 +646,7 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
         Ok(vec![node])
     }
 
-    fn use_component<'v>(&mut self, cx: &mut ViewCx<'v>, el: &Element) -> Res<Vec<Node>> {
+    fn use_component<'v>(&mut self, cx: &mut ViewCx<'v>, el: &'v Element) -> Res<Vec<Node>> {
         let Some(&Component { decl, file }) = cx.components.get(el.name.name.as_str()) else {
             return Err(self.internal(el.span, "composant inconnu dans une vue vérifiée"));
         };
@@ -364,7 +656,16 @@ impl<W: Write + Send> Interp<'_, '_, '_, '_, W> {
                 args.push((p.name.name.clone(), self.eval(e)?));
             }
         }
-        self.component_nodes(cx, decl, file, args)
+        // Identité par position : parent, nom et rang d'utilisation dans ce parent.
+        let child = {
+            let (parent, counter) = cx.instances.last_mut().expect("instance en cours");
+            *counter += 1;
+            format!("{parent}/{}#{counter}", decl.name.name)
+        };
+        cx.instances.push((child, 0));
+        let r = self.component_nodes(cx, decl, file, args);
+        cx.instances.pop();
+        r
     }
 
     fn apply_named_style<'v>(

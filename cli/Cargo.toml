@@ -19,6 +19,7 @@ mcf-syntax.workspace = true
 mcf-semantic.workspace = true
 mcf-runtime.workspace = true
 mcf-view.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [lints]

@@ -4,6 +4,8 @@
 //! 3 = erreur pendant l'exécution (`mcf run`).
 
 mod html;
+mod live;
+mod serve;
 mod view_cmd;
 
 use mcf_diagnostics::{codes, SourceFile};
@@ -19,7 +21,7 @@ Usage :
   mcf check <fichier|dossier> [--format text|json] [--strict] [--no-hints]
              (vérifie les .mcf, les interfaces .uimcf et les configurations .cfg)
   mcf run <fichier|dossier> [--strict] [--no-hints]
-  mcf view <dossier> [--component Nom] [--out page.html] [--format json]
+  mcf view <dossier> [--component Nom] [--out page.html] [--format json] [--serve [--port N]]
              (calcule la vue d'un composant .uimcf : page HTML d'aperçu, ou JSON)
   mcf describe errors|keywords [--format text|json]
   mcf version
@@ -43,6 +45,8 @@ struct Options {
     hints: bool,
     component: Option<String>,
     out: Option<String>,
+    serve: bool,
+    port: u16,
 }
 
 fn parse_options(args: &[String]) -> Result<Options, String> {
@@ -53,6 +57,8 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
         hints: true,
         component: None,
         out: None,
+        serve: false,
+        port: 0,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -61,6 +67,13 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
             "--no-hints" => opts.hints = false,
             "--component" => {
                 opts.component = Some(it.next().ok_or("--component demande un nom")?.clone())
+            }
+            "--serve" => opts.serve = true,
+            "--port" => {
+                opts.port = it
+                    .next()
+                    .and_then(|p| p.parse().ok())
+                    .ok_or("--port demande un numéro de port")?
             }
             "--out" => opts.out = Some(it.next().ok_or("--out demande un chemin")?.clone()),
             "--format" => {

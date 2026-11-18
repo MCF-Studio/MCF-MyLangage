@@ -35,7 +35,7 @@ pub fn page(title: &str, root: &Node) -> String {
     )
 }
 
-const BASE_CSS: &str = "\
+pub const BASE_CSS: &str = "\
 html,body{margin:0;min-height:100%;background:#11111b;color:#cdd6f4;\
 font:16px/1.4 system-ui,-apple-system,'Segoe UI',sans-serif}\
 *{box-sizing:border-box}\
@@ -67,7 +67,7 @@ fn word(style: Style, w: &str) -> &str {
 }
 
 /// Déclarations CSS d'un style ; `parent_stack` : le parent superpose ses enfants.
-fn css(n: &Node, parent_stack: bool) -> String {
+pub fn css(n: &Node, parent_stack: bool) -> String {
     let mut css = String::new();
     let mut p = |name: &str, v: String| {
         let _ = write!(css, "{name}:{v};");
