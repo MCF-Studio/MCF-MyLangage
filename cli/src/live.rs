@@ -75,6 +75,7 @@ async function apply(r) {
   const data = await r.json();
   if (data.error) { errBox.textContent = data.error; errBox.style.display = 'block'; return; }
   errBox.style.display = 'none';
+  if (data.idle) return;
   sync(root, 0, data.tree);
 }
 
@@ -125,4 +126,6 @@ function sync(parent, i, n) {
 }
 
 fetch('/view?k=' + KEY).then(apply);
+// Les actions qui dorment (`sleep`) reprennent ici : le serveur répond `idle` s'il n'y a rien de neuf.
+setInterval(() => { fetch('/tick?k=' + KEY).then(apply).catch(() => {}); }, 250);
 "#;

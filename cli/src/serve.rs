@@ -32,7 +32,7 @@ fn random_key() -> String {
     key
 }
 
-pub fn serve(session: &mut ViewSession<'_>, title: &str, port: u16) -> std::io::Result<()> {
+pub fn serve(session: &mut ViewSession, title: &str, port: u16) -> std::io::Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     let key = random_key();
     let addr = listener.local_addr()?;
@@ -59,7 +59,14 @@ fn error_json(e: &mcf_runtime::RuntimeError) -> String {
     serde_json::json!({ "error": format!("{} : {}", d.code.id, d.message) }).to_string()
 }
 
-fn view_json(session: &mut ViewSession<'_>) -> String {
+fn print_output(session: &mut ViewSession) {
+    let printed = session.take_output();
+    if !printed.is_empty() {
+        print!("{printed}");
+    }
+}
+
+fn view_json(session: &mut ViewSession) -> String {
     match session.view() {
         Ok(tree) => serde_json::json!({ "tree": live::live_json(&tree, false) }).to_string(),
         Err(e) => error_json(&e),
@@ -68,7 +75,7 @@ fn view_json(session: &mut ViewSession<'_>) -> String {
 
 fn handle(
     mut stream: TcpStream,
-    session: &mut ViewSession<'_>,
+    session: &mut ViewSession,
     title: &str,
     key: &str,
 ) -> std::io::Result<()> {
@@ -106,6 +113,18 @@ fn handle(
             let body = view_json(session);
             respond(&mut stream, "200 OK", "application/json", &body)
         }
+        ("GET", "/tick") => {
+            // Reprend les actions dont le `sleep` est échu ; rien de neuf : réponse minimale.
+            let body = match session.tick() {
+                Ok(true) => {
+                    print_output(session);
+                    view_json(session)
+                }
+                Ok(false) => serde_json::json!({ "idle": true }).to_string(),
+                Err(e) => error_json(&e),
+            };
+            respond(&mut stream, "200 OK", "application/json", &body)
+        }
         ("POST", "/event") => {
             // Un événement tient en quelques centaines d'octets : corps limité.
             if length > 64 * 1024 {
@@ -121,10 +140,7 @@ fn handle(
             let body = match serde_json::from_slice::<EventRequest>(&body) {
                 Ok(req) => match session.dispatch(&req.path, req.event, req.text.as_deref()) {
                     Ok(_) => {
-                        let printed = session.take_output();
-                        if !printed.is_empty() {
-                            print!("{printed}");
-                        }
+                        print_output(session);
                         view_json(session)
                     }
                     Err(e) => error_json(&e),

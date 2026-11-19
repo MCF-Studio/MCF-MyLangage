@@ -2,10 +2,14 @@
 //! événements de l'affichage (clic, saisie) déclenchent les actions du `.uimcf`.
 //!
 //! [`ViewSession`] garde entre deux événements les globales, les `state` des composants et les
-//! abonnements `on X => f`. Chaque événement s'exécute **jusqu'au bout** (tâches lancées
-//! comprises), puis la vue est recalculée en entier ; [`mcf_view::Renderer`] en déduit les
-//! changements d'affichage. C'est un modèle **provisoire** : le choix définitif (D69) reste à
-//! faire, et un événement qui dort (`sleep`) fige l'interface le temps qu'il dure.
+//! abonnements `on X => f`. Un événement s'exécute jusqu'à ce que plus aucune tâche ne puisse
+//! avancer **sans attendre le temps** : un `sleep` suspend sa tâche (elle reste dans son
+//! ordonnanceur) et rend la main à l'hôte, qui relance ce qui est échu avec
+//! [`ViewSession::tick`]. La vue est recalculée en entier ; [`mcf_view::Renderer`] en déduit les
+//! changements d'affichage. L'interface ne gèle donc plus pendant un `sleep` (D69).
+//!
+//! Les futures des tâches ne sont pas `Send` : toute la session vit dans un **fil de travail**
+//! (à grande pile) lancé par [`ViewSession::with`] ; [`ViewSession`] n'en est que la télécommande.
 //!
 //! Une vue n'a pas d'effet : rien ici n'écrit dans les globales pendant le calcul de la vue. Les
 //! appels de fonctions `.mcf` dans une expression restent permis (D55), la vérification des
@@ -14,8 +18,10 @@
 //! Identité (D61) : un composant est identifié par sa position (parent, nom, rang d'utilisation) ;
 //! son `state` suit cette identité d'un calcul à l'autre.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path as FsPath, PathBuf};
+use std::sync::mpsc::{channel, Receiver, Sender};
 
 use mcf_diagnostics::{codes, Diagnostic, SourceFile, Span};
 use mcf_syntax::ast::*;
@@ -46,8 +52,9 @@ pub fn render_view(
 ) -> Result<Node, Box<RuntimeError>> {
     let stubs = ui_stub_modules(ui);
     let all: Vec<&Module> = modules.iter().copied().chain(stubs.iter()).collect();
-    let mut session = ViewSession::new(&all, ui, files, dirs, root, component);
-    session.view()
+    ViewSession::with(&all, ui, files, dirs, root, component, |session| {
+        session.view()
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -89,8 +96,9 @@ struct ViewCx<'v> {
     current: Vec<&'v UiDecl>,
     /// Instances en cours : identité par position et compteur d'utilisations de composants.
     instances: Vec<(String, usize)>,
-    /// `state` de tous les composants affichés, par « instance/nom ».
-    states: HashMap<String, Value>,
+    /// `state` de tous les composants affichés, par « instance/nom ». Partagés : une action
+    /// suspendue (`sleep`) les modifie après coup, pendant qu'une autre vue est calculée.
+    states: Rc<RefCell<HashMap<String, Value>>>,
     actions: Vec<Action<'v>>,
     count: usize,
     /// Plusieurs éléments à la racine : un `Box` a été ajouté devant.
@@ -107,13 +115,13 @@ impl ViewCx<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Op<'x> {
+#[derive(Clone)]
+enum Op {
     Render,
     Event {
         index: usize,
         event: Event,
-        text: Option<&'x str>,
+        text: Option<String>,
     },
 }
 
@@ -122,194 +130,352 @@ enum OpOut {
     Handled(bool),
 }
 
-/// Interface vivante : garde les globales, les `state` et les abonnements entre deux
-/// événements (voir l'en-tête du module pour le modèle d'exécution).
-pub struct ViewSession<'a> {
-    program: Program<'a>,
-    cx: ViewCx<'a>,
-    globals: Vec<Option<Value>>,
-    listeners: Vec<ListenerSlot>,
-    initialized: bool,
-    component: String,
-    out: Vec<u8>,
-    tree: Option<Node>,
+type Failure = Box<RuntimeError>;
+
+enum Cmd {
+    View,
+    Dispatch {
+        path: Vec<usize>,
+        event: Event,
+        text: Option<String>,
+    },
+    Tick,
+    TakeOutput,
 }
 
-impl<'a> ViewSession<'a> {
-    /// `modules` : les `.mcf` puis les modules de [`ui_stub_modules`] (un par `.uimcf`) ;
-    /// `files` et `dirs` dans le même ordre.
-    pub fn new(
+enum Reply {
+    Tree(Result<Node, Failure>),
+    Handled(Result<bool, Failure>),
+    Ticked(Result<bool, Failure>),
+    Output(String),
+}
+
+/// Réveils traités au plus par [`ViewSession::tick`] : une tâche qui fait `sleep(0)` en boucle
+/// ne doit pas empêcher l'hôte de reprendre la main.
+const MAX_WAKES_PER_TICK: usize = 1_000;
+
+fn lost() -> Failure {
+    failure("la session s'est arrêtée de façon inattendue")
+}
+
+/// Télécommande d'une interface vivante (voir l'en-tête du module pour le modèle d'exécution).
+pub struct ViewSession {
+    tx: Sender<Cmd>,
+    rx: Receiver<Reply>,
+}
+
+impl ViewSession {
+    /// Ouvre une session le temps de `f`. `modules` : les `.mcf` puis les modules de
+    /// [`ui_stub_modules`] (un par `.uimcf`) ; `files` et `dirs` dans le même ordre.
+    pub fn with<'a, R>(
         modules: &[&'a Module],
         ui: &'a [&'a UiModule],
         files: &'a [SourceFile],
         dirs: &'a [PathBuf],
         root: &FsPath,
         component: &str,
-    ) -> Self {
-        let mut program = Program::build(modules, files, dirs);
-        program.root = root.to_path_buf();
-        let offset = modules.len() - ui.len();
-        let mut cx = ViewCx {
-            components: HashMap::new(),
-            ui,
-            offset,
-            current: Vec::new(),
-            instances: Vec::new(),
-            states: HashMap::new(),
-            actions: Vec::new(),
-            count: 0,
-            wrapped: false,
-        };
-        for (i, u) in ui.iter().enumerate() {
-            for decl in &u.components {
-                cx.components.insert(
-                    decl.name.name.as_str(),
-                    Component {
-                        decl,
-                        file: offset + i,
-                    },
-                );
-            }
-        }
-        ViewSession {
-            globals: vec![None; program.globals.len()],
-            program,
-            cx,
-            listeners: Vec::new(),
-            initialized: false,
-            component: component.to_string(),
-            out: Vec::new(),
-            tree: None,
-        }
+        f: impl FnOnce(&mut ViewSession) -> R,
+    ) -> R {
+        std::thread::scope(|scope| {
+            let (tx, worker_rx) = channel();
+            let (worker_tx, rx) = channel();
+            // Si le fil ne démarre pas, le canal se ferme : chaque appel rend une erreur.
+            let _ = std::thread::Builder::new()
+                .name("mcf-view".into())
+                .stack_size(STACK_SIZE)
+                .spawn_scoped(scope, move || {
+                    worker(
+                        modules, ui, files, dirs, root, component, &worker_rx, &worker_tx,
+                    );
+                });
+            let mut session = ViewSession { tx, rx };
+            let result = f(&mut session);
+            // Fermer le canal termine le fil de travail ; la portée l'attend.
+            drop(session);
+            result
+        })
+    }
+
+    fn call(&self, cmd: Cmd) -> Option<Reply> {
+        self.tx.send(cmd).ok()?;
+        self.rx.recv().ok()
     }
 
     /// Calcule la vue avec l'état actuel.
-    pub fn view(&mut self) -> Result<Node, Box<RuntimeError>> {
-        match self.run_op(Op::Render)? {
-            OpOut::Tree(node) => {
-                self.tree = Some(node.clone());
-                Ok(node)
-            }
-            OpOut::Handled(_) => Err(failure("calcul de la vue : résultat inattendu")),
+    pub fn view(&mut self) -> Result<Node, Failure> {
+        match self.call(Cmd::View) {
+            Some(Reply::Tree(r)) => r,
+            _ => Err(lost()),
         }
     }
 
     /// Traite un événement de l'élément désigné par `path` (indices d'enfants depuis la racine
     /// de la dernière vue calculée). `text` : saisie d'un `Input`. Rend `false` si l'élément
     /// n'écoute pas cet événement. Rappeler [`ViewSession::view`] ensuite.
+    ///
+    /// Rend la main dès que plus rien ne peut avancer sans attendre : une action qui dort
+    /// (`sleep`) n'est pas terminée au retour ; [`ViewSession::tick`] la reprend.
     pub fn dispatch(
         &mut self,
         path: &[usize],
         event: Event,
         text: Option<&str>,
-    ) -> Result<bool, Box<RuntimeError>> {
-        let Some(tree) = &self.tree else {
-            return Ok(false);
+    ) -> Result<bool, Failure> {
+        let cmd = Cmd::Dispatch {
+            path: path.to_vec(),
+            event,
+            text: text.map(str::to_string),
         };
-        let Some(rank) = tree.preorder_index(path) else {
-            return Ok(false);
-        };
-        // L'éventuel `Box` de la racine n'a pas été créé par une vue : il n'a pas d'action.
-        let Some(index) = rank.checked_sub(usize::from(self.cx.wrapped)) else {
-            return Ok(false);
-        };
-        match self.run_op(Op::Event { index, event, text })? {
-            OpOut::Handled(h) => Ok(h),
-            OpOut::Tree(_) => Err(failure("événement : résultat inattendu")),
+        match self.call(cmd) {
+            Some(Reply::Handled(r)) => r,
+            _ => Err(lost()),
+        }
+    }
+
+    /// Relance les tâches dont l'attente (`sleep`) est échue ; ne bloque jamais. Rend `true`
+    /// si au moins une tâche a avancé : la vue est alors à recalculer. À appeler régulièrement
+    /// par l'hôte (à chaque image, ou sur une minuterie).
+    pub fn tick(&mut self) -> Result<bool, Failure> {
+        match self.call(Cmd::Tick) {
+            Some(Reply::Ticked(r)) => r,
+            _ => Err(lost()),
         }
     }
 
     /// Ce que `print` a écrit depuis le dernier appel.
     pub fn take_output(&mut self) -> String {
-        String::from_utf8_lossy(&std::mem::take(&mut self.out)).into_owned()
+        match self.call(Cmd::TakeOutput) {
+            Some(Reply::Output(text)) => text,
+            _ => String::new(),
+        }
+    }
+}
+
+/// Corps du fil de travail : crée le programme, l'état partagé et l'ordonnanceur, puis traite
+/// les commandes jusqu'à la fermeture du canal.
+#[allow(clippy::too_many_arguments)]
+fn worker<'a>(
+    modules: &[&'a Module],
+    ui: &'a [&'a UiModule],
+    files: &'a [SourceFile],
+    dirs: &'a [PathBuf],
+    root: &FsPath,
+    component: &str,
+    commands: &Receiver<Cmd>,
+    replies: &Sender<Reply>,
+) {
+    let mut program = Program::build(modules, files, dirs);
+    program.root = root.to_path_buf();
+    let offset = modules.len() - ui.len();
+    let mut cx = ViewCx {
+        components: HashMap::new(),
+        ui,
+        offset,
+        current: Vec::new(),
+        instances: Vec::new(),
+        states: Rc::new(RefCell::new(HashMap::new())),
+        actions: Vec::new(),
+        count: 0,
+        wrapped: false,
+    };
+    for (i, u) in ui.iter().enumerate() {
+        for decl in &u.components {
+            cx.components.insert(
+                decl.name.name.as_str(),
+                Component {
+                    decl,
+                    file: offset + i,
+                },
+            );
+        }
+    }
+    let mut out: Vec<u8> = Vec::new();
+    let shared = Shared {
+        world: RefCell::new(World {
+            out: &mut out,
+            globals: vec![None; program.globals.len()],
+            tasks: Vec::new(),
+            current: IDLE,
+            ready: VecDeque::new(),
+            timers: BTreeMap::new(),
+            seq: 0,
+            clock: 0,
+            failure: None,
+            aborted: false,
+            listeners: Vec::new(),
+            blocking: false,
+        }),
+    };
+    let queue: Rc<Queue<'_>> = Rc::new(RefCell::new(Vec::new()));
+    let mut worker = Worker {
+        program: &program,
+        shared: &shared,
+        queue,
+        scheduler: Scheduler::new(),
+        cx: Rc::new(RefCell::new(cx)),
+        initialized: Rc::new(Cell::new(false)),
+        component: component.to_string(),
+        tree: None,
+    };
+    while let Ok(cmd) = commands.recv() {
+        if replies.send(worker.handle(cmd)).is_err() {
+            break;
+        }
+    }
+}
+
+/// L'état de la session, côté fil de travail. `scheduler` garde les futures des tâches
+/// suspendues d'une commande à l'autre.
+struct Worker<'env, 'o, 'a> {
+    program: &'env Program<'a>,
+    shared: &'env Shared<'o, Vec<u8>>,
+    queue: Rc<Queue<'env>>,
+    scheduler: Scheduler<'env>,
+    cx: Rc<RefCell<ViewCx<'a>>>,
+    initialized: Rc<Cell<bool>>,
+    component: String,
+    tree: Option<Node>,
+}
+
+impl<'env, 'o, 'a> Worker<'env, 'o, 'a> {
+    fn handle(&mut self, cmd: Cmd) -> Reply {
+        match cmd {
+            Cmd::View => Reply::Tree(match self.run_op(Op::Render, true) {
+                Ok(OpOut::Tree(node)) => {
+                    self.tree = Some(node.clone());
+                    Ok(node)
+                }
+                Ok(OpOut::Handled(_)) => Err(failure("calcul de la vue : résultat inattendu")),
+                Err(e) => Err(e),
+            }),
+            Cmd::Dispatch { path, event, text } => {
+                Reply::Handled(self.dispatch(&path, event, text))
+            }
+            Cmd::Tick => Reply::Ticked(self.tick()),
+            Cmd::TakeOutput => {
+                let mut w = self.shared.world.borrow_mut();
+                Reply::Output(String::from_utf8_lossy(&std::mem::take(&mut *w.out)).into_owned())
+            }
+        }
     }
 
-    fn run_op(&mut self, op: Op<'_>) -> Result<OpOut, Box<RuntimeError>> {
-        let ViewSession {
-            program,
-            cx,
-            globals,
-            listeners,
-            initialized,
-            component,
-            out,
-            ..
-        } = self;
-        let program = &*program;
-        // Un tour d'ordonnanceur sur un fil à grande pile (récursion des appels MCF) ; aucun
-        // autre fil n'est créé : les tâches de l'événement sont des futures du même fil.
-        std::thread::scope(|s| {
-            std::thread::Builder::new()
-                .name("mcf-view".into())
-                .stack_size(STACK_SIZE)
-                .spawn_scoped(s, || {
-                    let shared = Shared {
-                        world: RefCell::new(World {
-                            out: &mut *out,
-                            globals: std::mem::take(globals),
-                            tasks: vec![TaskSlot::new()],
-                            current: 0,
-                            ready: VecDeque::new(),
-                            timers: BTreeMap::new(),
-                            seq: 0,
-                            clock: 0,
-                            failure: None,
-                            aborted: false,
-                            listeners: std::mem::take(listeners),
-                        }),
-                    };
-                    let queue: Rc<Queue<'_>> = Rc::new(RefCell::new(Vec::new()));
-                    let result: Rc<RefCell<Option<Res<OpOut>>>> = Rc::new(RefCell::new(None));
-                    let (shared_ref, main_queue, main_result) =
-                        (&shared, Rc::clone(&queue), Rc::clone(&result));
-                    let main: TaskFuture<'_> = Box::pin(async move {
-                        let mut it = Interp {
-                            calls: Vec::new(),
-                            p: program,
-                            shared: shared_ref,
-                            queue: main_queue,
-                            id: 0,
-                        };
-                        let mut r = it.step(cx, initialized, component, op).await;
-                        if r.is_ok() && matches!(op, Op::Event { .. }) {
-                            // Les tâches lancées par l'événement vont jusqu'au bout.
-                            let mut t = 1;
-                            while t < it.w().tasks.len() {
-                                if let Err(e) = it.wait_for(t, None).await {
-                                    r = Err(e);
-                                    break;
-                                }
-                                t += 1;
-                            }
-                        }
-                        it.end_task(match &r {
-                            Ok(_) => Ok(Value::Void),
-                            Err(_) => Err(Stop::Abort),
-                        });
-                        *main_result.borrow_mut() = Some(r);
-                    });
-                    drive(&shared, &queue, main);
-                    let mut w = shared.world.borrow_mut();
-                    *globals = std::mem::take(&mut w.globals);
-                    *listeners = std::mem::take(&mut w.listeners);
-                    let failed = w.failure.take();
-                    drop(w);
-                    let outcome = result.borrow_mut().take();
-                    match (outcome, failed) {
-                        (Some(Err(Stop::Error(e))), _)
-                        | (Some(Ok(_)), Some(e))
-                        | (Some(Err(_)), Some(e)) => Err(e),
-                        (Some(Err(_)), None) | (None, None) => {
-                            Err(failure("le traitement a été interrompu"))
-                        }
-                        (None, Some(e)) => Err(e),
-                        (Some(Ok(v)), None) => Ok(v),
-                    }
-                })
-                .map_err(|e| failure(&format!("impossible de démarrer le calcul : {e}")))?
-                .join()
-                .unwrap_or_else(|_| Err(failure("le calcul s'est arrêté de façon inattendue")))
-        })
+    fn dispatch(
+        &mut self,
+        path: &[usize],
+        event: Event,
+        text: Option<String>,
+    ) -> Result<bool, Failure> {
+        let Some(rank) = self.tree.as_ref().and_then(|t| t.preorder_index(path)) else {
+            return Ok(false);
+        };
+        // L'éventuel `Box` de la racine n'a pas été créé par une vue : il n'a pas d'action.
+        let wrapped = self.cx.borrow().wrapped;
+        let Some(index) = rank.checked_sub(usize::from(wrapped)) else {
+            return Ok(false);
+        };
+        match self.run_op(Op::Event { index, event, text }, false)? {
+            OpOut::Handled(h) => Ok(h),
+            OpOut::Tree(_) => Err(failure("événement : résultat inattendu")),
+        }
+    }
+
+    /// Exécute une opération dans une nouvelle tâche, jusqu'à ce que plus rien ne puisse avancer
+    /// sans attendre le temps. `wait` : attendre aussi les minuteries jusqu'à la fin de
+    /// l'opération (le calcul d'une vue en a besoin pour rendre un arbre).
+    fn run_op(&mut self, op: Op, wait: bool) -> Result<OpOut, Failure> {
+        let id = {
+            let mut w = self.shared.world.borrow_mut();
+            w.tasks.push(TaskSlot::new());
+            w.current = w.tasks.len() - 1;
+            w.current
+        };
+        let result: Rc<RefCell<Option<Result<OpOut, ()>>>> = Rc::new(RefCell::new(None));
+        let handled: Rc<Cell<Option<bool>>> = Rc::new(Cell::new(None));
+        let (p, shared, queue) = (self.program, self.shared, Rc::clone(&self.queue));
+        let (cx, initialized) = (Rc::clone(&self.cx), Rc::clone(&self.initialized));
+        let component = self.component.clone();
+        let (res, hd) = (Rc::clone(&result), Rc::clone(&handled));
+        let main: TaskFuture<'env> = Box::pin(async move {
+            let mut it = Interp {
+                calls: Vec::new(),
+                p,
+                shared,
+                queue,
+                id,
+            };
+            match it.step(&cx, &initialized, &component, op, &hd).await {
+                Ok(out) => {
+                    it.end_task(Ok(Value::Void));
+                    *res.borrow_mut() = Some(Ok(out));
+                }
+                Err(stop) => {
+                    // Une erreur arrête toutes les tâches (comme `mcf run`) et est rapportée.
+                    it.end_task(Err(stop));
+                    *res.borrow_mut() = Some(Err(()));
+                }
+            }
+        });
+        self.scheduler.add(id, main);
+        self.scheduler.run(self.shared, &self.queue);
+        loop {
+            if let Some(e) = self.take_failure() {
+                return Err(e);
+            }
+            if let Some(r) = result.borrow_mut().take() {
+                return r.map_err(|()| failure("le traitement a été interrompu"));
+            }
+            if !wait {
+                // L'action dort : l'élément l'écoutait bien, le reste viendra avec `tick`.
+                return Ok(OpOut::Handled(handled.get().unwrap_or(false)));
+            }
+            if !self.wake(true) {
+                return Err(failure("le calcul de la vue ne se termine pas"));
+            }
+        }
+    }
+
+    /// Reprend la prochaine tâche prête ou échue (en attendant son échéance si `blocking`).
+    /// Rend `false` quand il n'y en a pas.
+    fn wake(&mut self, blocking: bool) -> bool {
+        let next = {
+            let mut w = self.shared.world.borrow_mut();
+            w.blocking = blocking;
+            let pick = w.pick_next();
+            w.blocking = false;
+            match pick {
+                Pick::Task(next) => next,
+                Pick::Idle | Pick::Nothing => return false,
+            }
+        };
+        self.shared.world.borrow_mut().current = next;
+        self.scheduler.run(self.shared, &self.queue);
+        true
+    }
+
+    fn tick(&mut self) -> Result<bool, Failure> {
+        let mut ran = false;
+        for _ in 0..MAX_WAKES_PER_TICK {
+            if !self.wake(false) {
+                break;
+            }
+            ran = true;
+            if let Some(e) = self.take_failure() {
+                return Err(e);
+            }
+        }
+        Ok(ran)
+    }
+
+    /// Première erreur d'exécution depuis la dernière fois. Toutes les tâches ont été arrêtées :
+    /// la session repart d'un ordonnanceur vide (les globales et les `state` sont conservés).
+    fn take_failure(&mut self) -> Option<Failure> {
+        let mut w = self.shared.world.borrow_mut();
+        let e = w.failure.take()?;
+        w.aborted = false;
+        w.ready.clear();
+        w.timers.clear();
+        w.current = IDLE;
+        Some(e)
     }
 }
 
@@ -325,31 +491,44 @@ fn main_prop(kind: Kind) -> Option<Prop> {
 }
 
 impl<W: Write> Interp<'_, '_, '_, W> {
-    /// Une opération de la session, avec le verrou de l'état partagé déjà pris.
+    /// Une opération de la session. Aucun emprunt de `cx` ne traverse un point de suspension
+    /// hors du calcul de la vue : une action suspendue ne bloque pas le calcul suivant.
+    #[allow(clippy::await_holding_refcell_ref)]
     async fn step<'v>(
         &mut self,
-        cx: &mut ViewCx<'v>,
-        initialized: &mut bool,
+        cx: &Rc<RefCell<ViewCx<'v>>>,
+        initialized: &Cell<bool>,
         component: &str,
-        op: Op<'_>,
+        op: Op,
+        handled: &Cell<Option<bool>>,
     ) -> Res<OpOut> {
-        if !*initialized {
+        if !initialized.get() {
             self.init_globals().await?;
-            *initialized = true;
+            initialized.set(true);
         }
         match op {
-            Op::Render => self.render(cx, component).await.map(OpOut::Tree),
+            Op::Render => {
+                // Emprunt gardé pendant le calcul : `Worker::run_op` attend la fin d'une vue
+                // (`wait`), donc il ne survit jamais à la commande qui l'a demandé.
+                let mut cx = cx.borrow_mut();
+                self.render(&mut cx, component).await.map(OpOut::Tree)
+            }
             Op::Event { index, event, text } => {
-                let mut found: Vec<Action<'v>> = cx
-                    .actions
-                    .iter()
-                    .filter(|a| a.index == index && a.event == event)
-                    .cloned()
-                    .collect();
+                let (mut found, states): (Vec<Action<'v>>, _) = {
+                    let cx = cx.borrow();
+                    let found = cx
+                        .actions
+                        .iter()
+                        .filter(|a| a.index == index && a.event == event)
+                        .cloned()
+                        .collect();
+                    (found, Rc::clone(&cx.states))
+                };
                 // La liaison met à jour le `state` avant que `onChange` ne le lise.
                 found.sort_by_key(|a| !matches!(a.kind, ActionKind::Bind(_)));
+                handled.set(Some(!found.is_empty()));
                 for a in &found {
-                    self.run_action(cx, a, text).await?;
+                    self.run_action(&states, a, text.as_deref()).await?;
                 }
                 Ok(OpOut::Handled(!found.is_empty()))
             }
@@ -394,7 +573,7 @@ impl<W: Write> Interp<'_, '_, '_, W> {
     /// Exécute l'action d'un élément avec les variables vues au moment du calcul de la vue.
     async fn run_action<'v>(
         &mut self,
-        cx: &mut ViewCx<'v>,
+        states: &RefCell<HashMap<String, Value>>,
         a: &Action<'v>,
         text: Option<&str>,
     ) -> Res<()> {
@@ -405,14 +584,14 @@ impl<W: Write> Interp<'_, '_, '_, W> {
             called_at: None,
             blocks: a.blocks.clone(),
         });
-        let r = self.action_body(cx, a, text).await;
+        let r = self.action_body(states, a, text).await;
         self.calls.pop();
         r
     }
 
     async fn action_body<'v>(
         &mut self,
-        cx: &mut ViewCx<'v>,
+        states: &RefCell<HashMap<String, Value>>,
         a: &Action<'v>,
         text: Option<&str>,
     ) -> Res<()> {
@@ -420,7 +599,7 @@ impl<W: Write> Interp<'_, '_, '_, W> {
         match &a.kind {
             ActionKind::Bind(name) => {
                 let value = Value::Str(text.unwrap_or("").into());
-                cx.states.insert(key(name), value);
+                states.borrow_mut().insert(key(name), value);
             }
             ActionKind::Run(UiValue::Expr(e)) => {
                 // `onClick: f` désigne une fonction sans argument ; `f(x)` est un appel.
@@ -434,7 +613,7 @@ impl<W: Write> Interp<'_, '_, '_, W> {
                 let v = self.eval(value).await?;
                 match &target.kind {
                     ExprKind::Name { ident } => {
-                        cx.states.insert(key(&ident.name), v);
+                        states.borrow_mut().insert(key(&ident.name), v);
                     }
                     _ => return Err(self.internal(target.span, "cible d'affectation inconnue")),
                 }
@@ -485,14 +664,15 @@ impl<W: Write> Interp<'_, '_, '_, W> {
         for m in &decl.members {
             let value = if m.kind == UiMemberKind::State {
                 let key = cx.state_key(&m.name.name);
-                match cx.states.get(&key) {
-                    Some(v) => v.clone(),
+                let known = cx.states.borrow().get(&key).cloned();
+                match known {
+                    Some(v) => v,
                     None => {
                         let v = match &m.init {
                             Some(init) => self.eval(init).await?,
                             None => return Err(self.internal(m.span, "`state` sans valeur")),
                         };
-                        cx.states.insert(key, v.clone());
+                        cx.states.borrow_mut().insert(key, v.clone());
                         v
                     }
                 }

@@ -13,9 +13,11 @@
 //! déterministe : file des tâches prêtes, puis minuteries dans l'ordre de leur échéance
 //! (horloge virtuelle). Un seul fil à grande pile sert à la récursion des appels MCF.
 //!
-//! Reste à faire pour le web (D69) : une session qui garde ses tâches suspendues entre deux
-//! images (aujourd'hui, un événement va jusqu'au bout) et une attente de minuterie qui rend la
-//! main à l'hôte au lieu de bloquer (`std::thread::sleep`, `Instant`).
+//! Deux modes d'attente (D69). `mcf run` est **bloquant** : quand seules des minuteries restent, le
+//! fil dort jusqu'à la plus proche. Une session ([`ViewSession`]) ne bloque jamais : l'ordonnanceur
+//! s'arrête (« repos »), les tâches restent suspendues dans leurs futures, et l'hôte les relance
+//! avec [`ViewSession::tick`] quand une échéance est passée.
+//! Reste pour le web : remplacer `Instant` (pas d'horloge système en WebAssembly).
 
 mod config;
 mod value;
@@ -181,6 +183,7 @@ fn run_here<W: Write>(
             failure: None,
             aborted: false,
             listeners: Vec::new(),
+            blocking: true,
         }),
     };
     let queue: Rc<Queue<'_>> = Rc::new(RefCell::new(Vec::new()));
@@ -196,7 +199,9 @@ fn run_here<W: Write>(
         let result = it.start().await.map(|()| Value::Void);
         it.end_task(result);
     });
-    drive(&shared, &queue, main);
+    let mut scheduler = Scheduler::new();
+    scheduler.add(0, main);
+    scheduler.run(&shared, &queue);
     let mut w = shared.world.borrow_mut();
     let _ = w.out.flush();
     match w.failure.take() {
@@ -292,12 +297,52 @@ struct World<'o, W> {
     aborted: bool,
     /// Abonnements `on X => f`, dans l'ordre de création (D45).
     listeners: Vec<ListenerSlot>,
+    /// Attendre réellement une minuterie (`mcf run`) ou rendre la main à l'hôte (session).
+    blocking: bool,
+}
+
+/// Valeur de `World::current` quand aucune tâche ne s'exécute : tout est fini ou suspendu sur
+/// une minuterie qui n'est pas encore échue.
+const IDLE: usize = usize::MAX;
+
+/// Suite à donner quand une tâche s'arrête.
+enum Pick {
+    Task(usize),
+    /// Il ne reste que des minuteries non échues (mode non bloquant).
+    Idle,
+    /// Plus rien ne peut avancer.
+    Nothing,
 }
 
 struct ListenerSlot {
     event: String,
     func: usize,
     active: bool,
+}
+
+impl<W: Write> World<'_, W> {
+    /// Désigne la prochaine tâche à exécuter : d'abord les tâches prêtes, puis la minuterie la
+    /// plus proche (attendue réellement en mode bloquant, sinon seulement si elle est échue).
+    fn pick_next(&mut self) -> Pick {
+        if let Some(next) = self.ready.pop_front() {
+            return Pick::Task(next);
+        }
+        let Some((&key, &(next, deadline))) = self.timers.iter().next() else {
+            return Pick::Nothing;
+        };
+        let now = Instant::now();
+        if deadline > now {
+            if !self.blocking {
+                return Pick::Idle;
+            }
+            let _ = self.out.flush();
+            std::thread::sleep(deadline - now);
+        }
+        self.timers.remove(&key);
+        self.clock = self.clock.max(key.0);
+        self.tasks[next].state = TaskState::Active;
+        Pick::Task(next)
+    }
 }
 
 impl<W> World<'_, W> {
@@ -351,51 +396,69 @@ impl Wake for NoWake {
 }
 
 /// Ordonnanceur : fait avancer la tâche désignée par `current`, une à la fois, jusqu'à ce que
-/// toutes soient terminées. Aucun fil système : l'ordre est celui de la file des tâches prêtes
-/// puis des minuteries (déterministe).
-fn drive<'env, W: Write>(shared: &'env Shared<'_, W>, queue: &Queue<'env>, main: TaskFuture<'env>) {
-    let waker = Waker::from(Arc::new(NoWake));
-    let mut cx = Context::from_waker(&waker);
-    let mut futures: Vec<Option<TaskFuture<'env>>> = vec![Some(main)];
-    loop {
-        for (id, f) in queue.borrow_mut().drain(..) {
-            while futures.len() <= id {
-                futures.push(None);
+/// toutes soient terminées ou que `current` vaille [`IDLE`]. Aucun fil système : l'ordre est
+/// celui de la file des tâches prêtes puis des minuteries (déterministe). Les futures des tâches
+/// suspendues restent ici entre deux appels de [`Scheduler::run`].
+struct Scheduler<'env> {
+    futures: Vec<Option<TaskFuture<'env>>>,
+}
+
+impl<'env> Scheduler<'env> {
+    fn new() -> Self {
+        Scheduler {
+            futures: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, id: usize, f: TaskFuture<'env>) {
+        while self.futures.len() <= id {
+            self.futures.push(None);
+        }
+        self.futures[id] = Some(f);
+    }
+
+    /// Rend la main quand plus aucune tâche ne peut avancer ; `current` vaut alors [`IDLE`].
+    fn run<W: Write>(&mut self, shared: &'env Shared<'_, W>, queue: &Queue<'env>) {
+        let waker = Waker::from(Arc::new(NoWake));
+        let mut cx = Context::from_waker(&waker);
+        loop {
+            let started: Vec<_> = queue.borrow_mut().drain(..).collect();
+            for (id, f) in started {
+                self.add(id, f);
             }
-            futures[id] = Some(f);
-        }
-        if futures.iter().all(Option::is_none) {
-            break;
-        }
-        let (current, aborted) = {
-            let w = shared.world.borrow();
-            (w.current, w.aborted)
-        };
-        if aborted {
-            // Chaque tâche reprend, voit l'arrêt et se termine.
-            for slot in &mut futures {
-                if let Some(f) = slot {
-                    if f.as_mut().poll(&mut cx).is_ready() {
+            if self.futures.iter().all(Option::is_none) {
+                break;
+            }
+            let (current, aborted) = {
+                let w = shared.world.borrow();
+                (w.current, w.aborted)
+            };
+            if aborted {
+                // Chaque tâche reprend, voit l'arrêt et se termine.
+                for slot in &mut self.futures {
+                    if let Some(f) = slot {
+                        if f.as_mut().poll(&mut cx).is_ready() {
+                            *slot = None;
+                        }
+                    }
+                }
+                continue;
+            }
+            match self.futures.get_mut(current) {
+                Some(slot @ Some(_)) => {
+                    let done = slot
+                        .as_mut()
+                        .is_some_and(|f| f.as_mut().poll(&mut cx).is_ready());
+                    if done {
                         *slot = None;
                     }
                 }
+                // Repos, ou tâche terminée sans successeur : rien à faire pour l'instant.
+                _ => break,
             }
-            continue;
         }
-        match futures.get_mut(current) {
-            Some(slot @ Some(_)) => {
-                let done = slot
-                    .as_mut()
-                    .is_some_and(|f| f.as_mut().poll(&mut cx).is_ready());
-                if done {
-                    *slot = None;
-                }
-            }
-            // La tâche courante est terminée et personne ne lui a succédé : plus rien à faire.
-            _ => break,
-        }
+        shared.world.borrow_mut().current = IDLE;
     }
-    queue.borrow_mut().clear();
 }
 
 /// Corps d'une tâche lancée par `start`.
@@ -826,25 +889,6 @@ impl<'env, 'o, 'a, W: Write> Interp<'env, 'o, 'a, W> {
 
     // ---------------------------------------------------------------- ordonnancement
 
-    /// Désigne la prochaine tâche à exécuter : d'abord les tâches prêtes, puis la minuterie la
-    /// plus proche (on attend alors réellement son échéance). `None` : plus rien ne peut avancer.
-    fn pick_next(&mut self) -> Option<usize> {
-        let mut w = self.wm();
-        if let Some(next) = w.ready.pop_front() {
-            return Some(next);
-        }
-        let (&key, &(next, deadline)) = w.timers.iter().next()?;
-        w.timers.remove(&key);
-        w.clock = w.clock.max(key.0);
-        w.tasks[next].state = TaskState::Active;
-        let _ = w.out.flush();
-        let now = Instant::now();
-        if deadline > now {
-            std::thread::sleep(deadline - now);
-        }
-        Some(next)
-    }
-
     /// Erreur « les tâches s'attendent », située sur une attente quand on la connaît.
     fn deadlock(at: Option<(usize, Span)>, message: &str) -> Box<RuntimeError> {
         let (file, span) = at.map_or((None, Span::new(0, 0)), |(f, s)| (Some(f), s));
@@ -860,11 +904,16 @@ impl<'env, 'o, 'a, W: Write> Interp<'env, 'o, 'a, W> {
     /// Point de suspension : l'état de cette tâche a déjà été mis à jour (`Sleeping`,
     /// `Waiting`). Passe la main et revient quand c'est de nouveau son tour.
     async fn suspend(&mut self, at: Option<(usize, Span)>) -> Res<()> {
-        let Some(next) = self.pick_next() else {
-            return Err(Stop::Error(Self::deadlock(
-                at,
-                "toutes les tâches s'attendent : le programme ne peut plus avancer",
-            )));
+        let pick = self.wm().pick_next();
+        let next = match pick {
+            Pick::Task(next) => next,
+            Pick::Idle => IDLE,
+            Pick::Nothing => {
+                return Err(Stop::Error(Self::deadlock(
+                    at,
+                    "toutes les tâches s'attendent : le programme ne peut plus avancer",
+                )));
+            }
         };
         if next != self.id {
             self.wm().hand_over(next);
@@ -1001,9 +1050,11 @@ impl<'env, 'o, 'a, W: Write> Interp<'env, 'o, 'a, W> {
             w.aborted
         };
         if !aborted {
-            match self.pick_next() {
-                Some(next) => self.wm().hand_over(next),
-                None => {
+            let pick = self.wm().pick_next();
+            match pick {
+                Pick::Task(next) => self.wm().hand_over(next),
+                Pick::Idle => self.wm().hand_over(IDLE),
+                Pick::Nothing => {
                     let mut w = self.wm();
                     if let Some(stuck) = w.tasks.iter().find(|t| !t.finished()) {
                         let e = Self::deadlock(
